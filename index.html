@@ -1185,26 +1185,50 @@ function percentile(arr, p) {
   const a = Float32Array.from(arr).sort();
   return a[Math.floor(clamp(p, 0, 1) * (a.length - 1))];
 }
-// 発声区間を検出。sensitivity 0..1 (大きいほど小さな音も拾う)
+// 発声(読み上げ)区間を検出。sensitivity 0..1 (大きいほど小さな音も拾う)
+// 会場の物音やざわめきで細かく反応しないよう、0.3秒の平均音量で判定し、
+// 「読み上げ」と「それ以外」の2グループに分かれるしきい値(大津の方法)を自動で決める。
 function detectVoiced(db, hop = 0.02, sensitivity = 0.5) {
-  const floor = percentile(db, 0.2), top = percentile(db, 0.97);
-  const th = floor + (top - floor) * (0.45 - 0.3 * sensitivity);
-  const thLow = th - 3;
+  const k = Math.max(1, Math.round(0.3 / hop)), n = db.length;
+  const pw = new Float64Array(n);
+  for (let i = 0; i < n; i++) pw[i] = Math.pow(10, db[i] / 10);
+  const sm = new Float32Array(n);
+  let acc = 0;
+  for (let i = 0; i < n + (k >> 1); i++) {
+    if (i < n) acc += pw[i];
+    if (i - k >= 0) acc -= pw[i - k];
+    const j = i - (k >> 1);
+    if (j >= 0 && j < n) sm[j] = 10 * Math.log10(acc / Math.min(k, i + 1) + 1e-10);
+  }
+  // 大津の方法
+  let lo = Infinity, hi = -Infinity;
+  for (const v of sm) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  const B = 200, hist = new Float64Array(B), w = (hi - lo) / B || 1;
+  for (const v of sm) hist[Math.min(B - 1, Math.floor((v - lo) / w))]++;
+  let tot = 0, sumAll = 0;
+  for (let i = 0; i < B; i++) { tot += hist[i]; sumAll += hist[i] * (lo + (i + 0.5) * w); }
+  let w0 = 0, s0 = 0, best = -1, th = (lo + hi) / 2;
+  for (let i = 0; i < B; i++) {
+    w0 += hist[i]; s0 += hist[i] * (lo + (i + 0.5) * w);
+    const w1 = tot - w0; if (!w0 || !w1) continue;
+    const m0 = s0 / w0, m1 = (sumAll - s0) / w1, v = w0 * w1 * (m0 - m1) ** 2;
+    if (v > best) { best = v; th = lo + (i + 1) * w; }
+  }
+  th -= (sensitivity - 0.5) * 8; // 感度で±4dB調整
   const segs = [];
   let on = false, start = 0;
-  for (let i = 0; i < db.length; i++) {
-    if (!on && db[i] > th) { on = true; start = i; }
-    else if (on && db[i] < thLow) { on = false; segs.push([start * hop, i * hop]); }
+  for (let i = 0; i < n; i++) {
+    if (!on && sm[i] > th) { on = true; start = i; }
+    else if (on && sm[i] <= th) { on = false; segs.push([start * hop, i * hop]); }
   }
-  if (on) segs.push([start * hop, db.length * hop]);
-  // 短い隙間をつなぎ、短すぎる音を除く
+  if (on) segs.push([start * hop, n * hop]);
   const merged = [];
   for (const s of segs) {
     const last = merged[merged.length - 1];
-    if (last && s[0] - last[1] < 0.3) last[1] = s[1];
+    if (last && s[0] - last[1] < 0.4) last[1] = s[1];
     else merged.push([...s]);
   }
-  return merged.filter(s => s[1] - s[0] >= 0.25);
+  return merged.filter(s => s[1] - s[0] >= 0.8);
 }
 // 読みのまとまり(前の下の句+次の上の句)にグループ化
 function groupUnits(segs, gapMax = 1.8, minDur = 1.5) {
@@ -1270,39 +1294,112 @@ function scoreCards(text, candidates) {
 }
 
 // ===== Whisper(ブラウザ内音声認識) =====
-const ASR = { pipe: null, model: null };
-async function loadASR(model, onStatus) {
-  if (ASR.pipe && ASR.model === model) return ASR.pipe;
-  onStatus?.('音声認識ライブラリを読み込み中…');
-  const T = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
-  T.env.allowLocalModels = false;
-  let device = 'wasm', dtype = 'q8';
-  if (navigator.gpu) {
-    try { if (await navigator.gpu.requestAdapter()) { device = 'webgpu'; dtype = { encoder_model: 'fp32', decoder_model_merged: 'q4' }; } } catch (e) {}
-  }
-  const files = {};
-  const progress_callback = (p) => {
-    if (p.status === 'progress' && p.file) {
-      files[p.file] = p;
-      const tot = Object.values(files).reduce((a, x) => a + (x.total || 0), 0);
-      const ld = Object.values(files).reduce((a, x) => a + (x.loaded || 0), 0);
-      onStatus?.(`モデルをダウンロード中… ${(ld / 1e6).toFixed(0)} / ${(tot / 1e6).toFixed(0)} MB(初回のみ)`);
-    }
-  };
+// 音声認識は画面が固まらないよう、別スレッド(Web Worker)で動かす
+const ASR_WORKER_SRC = `
+let T = null, pipe = null;
+const OPTS = { language: 'japanese', task: 'transcribe' };
+self.onmessage = async (ev) => {
+  const m = ev.data;
   try {
-    ASR.pipe = await T.pipeline('automatic-speech-recognition', model, { device, dtype, progress_callback });
+    if (m.type === 'load') {
+      T = T || await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
+      T.env.allowLocalModels = false;
+      let device = m.device;
+      if (device === 'webgpu') {
+        let ok = false;
+        try { ok = !!(self.navigator.gpu && await self.navigator.gpu.requestAdapter()); } catch (e) {}
+        if (!ok) device = 'wasm';
+      }
+      const dtype = device === 'webgpu' ? { encoder_model: 'fp32', decoder_model_merged: 'q4' } : 'q8';
+      const files = {};
+      const progress_callback = p => {
+        if (p.status === 'progress' && p.file) {
+          files[p.file] = p;
+          let tot = 0, ld = 0;
+          for (const k in files) { tot += files[k].total || 0; ld += files[k].loaded || 0; }
+          self.postMessage({ type: 'progress', loaded: ld, total: tot });
+        } else if (p.status === 'ready' || p.status === 'done') self.postMessage({ type: 'progress2' });
+      };
+      self.postMessage({ type: 'device', device });
+      pipe = await T.pipeline('automatic-speech-recognition', m.model, { device, dtype, progress_callback });
+      self.postMessage({ type: 'preparing2' });
+      await pipe(new Float32Array(16000), OPTS); // 試運転
+      self.postMessage({ type: 'ready', device });
+    } else if (m.type === 'run') {
+      const out = await pipe(m.audio, { ...OPTS, return_timestamps: true, chunk_length_s: 30, stride_length_s: 5 });
+      self.postMessage({ type: 'result', id: m.id, text: out.text || '', chunks: (out.chunks || []).map(c => ({ text: c.text, timestamp: c.timestamp })) });
+    }
   } catch (e) {
-    console.warn('WebGPU失敗→WASMで再試行', e);
-    ASR.pipe = await T.pipeline('automatic-speech-recognition', model, { device: 'wasm', dtype: 'q8', progress_callback });
-    device = 'wasm';
+    self.postMessage({ type: 'error', id: m.id, message: String((e && e.message) || e) });
   }
-  ASR.model = model; ASR.device = device;
-  return ASR.pipe;
+};`;
+const ASR = { worker: null, model: null, device: null, ready: false, pending: new Map(), seq: 0 };
+function asrTerminate() {
+  if (ASR.worker) ASR.worker.terminate();
+  ASR.pending.forEach(p => p.reject(new Error('CANCELLED')));
+  if (ASR.startReject) { const r = ASR.startReject; ASR.startReject = null; r(new Error('CANCELLED')); }
+  Object.assign(ASR, { worker: null, model: null, device: null, ready: false, pending: new Map() });
 }
-async function transcribe(pipe, data, sr, s, e) {
+function asrStartWorker(model, device, onStatus, timeoutSec) {
+  return new Promise((resolve, reject) => {
+    asrTerminate();
+    ASR.startReject = e => { done = true; clearInterval(tick); reject(e); };
+    const url = URL.createObjectURL(new Blob([ASR_WORKER_SRC], { type: 'text/javascript' }));
+    const w = new Worker(url, { type: 'module' });
+    ASR.worker = w; ASR.model = model;
+    let phase = 'download', t0 = Date.now(), prepT0 = null, dev = device, done = false;
+    let lastProg = Date.now(), fullyLoaded = false;
+    const tick = setInterval(() => {
+      if (done) return;
+      // ダウンロードが最後まで進み、3秒以上新しい進捗がなければ「準備中」とみなす
+      if (phase === 'download' && fullyLoaded && Date.now() - lastProg > 3000) { phase = 'prepare'; prepT0 = lastProg; }
+      if (phase === 'prepare') {
+        const sec = Math.round((Date.now() - prepT0) / 1000);
+        onStatus?.(`モデルを準備しています… ${sec}秒 [${dev === 'webgpu' ? 'GPU' : 'CPU'}](初回は数分かかることがあります)`);
+        if (sec > timeoutSec) { done = true; clearInterval(tick); reject(new Error('TIMEOUT')); }
+      } else if (Date.now() - t0 > 20 * 60 * 1000) { done = true; clearInterval(tick); reject(new Error('ダウンロードが終わりません')); }
+    }, 1000);
+    w.onmessage = ev => {
+      const m = ev.data;
+      if (m.type === 'device') dev = m.device;
+      else if (m.type === 'progress') {
+        lastProg = Date.now(); phase = 'download';
+        fullyLoaded = !!m.total && m.loaded >= m.total;
+        onStatus?.(`モデルを読み込み中… ${(m.loaded / 1e6).toFixed(0)} / ${(m.total / 1e6).toFixed(0)} MB(初回はダウンロードします)`);
+      } else if (m.type === 'preparing2' && phase !== 'prepare') { phase = 'prepare'; prepT0 = Date.now(); }
+      else if (m.type === 'ready') { done = true; clearInterval(tick); ASR.startReject = null; ASR.ready = true; ASR.device = m.device; resolve(); }
+      else if (m.type === 'result' || (m.type === 'error' && m.id != null)) {
+        const p = ASR.pending.get(m.id); if (!p) return;
+        ASR.pending.delete(m.id);
+        m.type === 'result' ? p.resolve(m) : p.reject(new Error(m.message));
+      } else if (m.type === 'error' && !done) { done = true; clearInterval(tick); reject(new Error(m.message)); }
+    };
+    w.onerror = e => { if (!done) { done = true; clearInterval(tick); reject(new Error(e.message || 'Workerエラー')); } };
+    w.postMessage({ type: 'load', model, device });
+  });
+}
+async function loadASR(model, onStatus) {
+  if (ASR.ready && ASR.model === model) return;
+  const gpu = !!navigator.gpu;
+  try {
+    await asrStartWorker(model, gpu ? 'webgpu' : 'wasm', onStatus, gpu ? 150 : 900);
+  } catch (e) {
+    if (e.message === 'CANCELLED') throw e;
+    if (!gpu) throw e;
+    // GPUでうまくいかなければCPUで再挑戦
+    console.warn('GPUでの準備に失敗→CPUで再試行', e);
+    onStatus?.('GPUでの準備がうまくいかないため、CPUで準備し直しています…');
+    await asrStartWorker(model, 'wasm', onStatus, 900);
+  }
+}
+async function transcribe(data, sr, s, e) {
   const a = Math.max(0, Math.floor((s - 0.3) * sr)), b = Math.min(data.length, Math.floor((e + 0.3) * sr));
   const seg = data instanceof Int16Array ? Float32Array.from(data.subarray(a, b), v => v / 32768) : data.slice(a, b);
-  const out = await pipe(seg, { language: 'japanese', task: 'transcribe', return_timestamps: true, chunk_length_s: 30, stride_length_s: 5 });
+  const id = ++ASR.seq;
+  const out = await new Promise((resolve, reject) => {
+    ASR.pending.set(id, { resolve, reject });
+    ASR.worker.postMessage({ type: 'run', id, audio: seg }, [seg.buffer]);
+  });
   const off = a / sr;
   const chunks = (out.chunks || []).map(c => ({ text: c.text, s: (c.timestamp?.[0] ?? 0) + off, e: (c.timestamp?.[1] ?? (b - a) / sr) + off }));
   return { text: out.text || '', chunks };
@@ -2219,7 +2316,7 @@ ACT.detect = async () => {
   }
 };
 
-ACT.cancelASR = () => { App.asrCancel = true; };
+ACT.cancelASR = () => { App.asrCancel = true; asrTerminate(); setStatus('中止しました'); };
 ACT.runASR = async () => {
   const m = curMatch();
   if (!App.videoFile) return toast('先に動画を開いてください');
@@ -2229,7 +2326,7 @@ ACT.runASR = async () => {
   $('#au-cancel').style.display = '';
   try {
     const A = await decodeVideoAudio(App.videoFile, (t, p) => setStatus(t, p));
-    const pipe = await loadASR(model, t => setStatus(t, 0));
+    await loadASR(model, t => setStatus(t, 0));
     m.audio.model = model;
     const units = m.audio.units;
     const t0 = performance.now();
@@ -2237,13 +2334,13 @@ ACT.runASR = async () => {
       if (App.asrCancel) { setStatus('中止しました'); break; }
       const u = units[ui];
       const eta = ui ? ((performance.now() - t0) / ui * (units.length - ui) / 1000) : null;
-      setStatus(`音声認識中… ${ui + 1} / ${units.length}${eta ? `(残り約${Math.ceil(eta / 60)}分)` : ''} [${ASR.device}]`, ui / units.length);
+      setStatus(`音声認識中… ${ui + 1} / ${units.length}${eta ? `(残り約${Math.ceil(eta / 60)}分)` : ''} [${ASR.device === 'webgpu' ? 'GPU' : 'CPU'}]`, ui / units.length);
       // 30秒を超えるまとまりは分割
       const parts = [];
       for (let s = u.s; s < u.e; s += 28) parts.push([s, Math.min(u.e, s + 28)]);
       let chunks = [], text = '';
       for (const [s, e] of parts) {
-        const out = await transcribe(pipe, A.data, A.sr, s, e);
+        const out = await transcribe(A.data, A.sr, s, e);
         chunks.push(...out.chunks); text += out.text;
       }
       applyASRUnit(m, u, text, chunks);
@@ -2252,8 +2349,8 @@ ACT.runASR = async () => {
     if (!App.asrCancel) { m.audio.asrDone = true; setStatus(`音声認識が終わりました(${units.length}か所)。黄色の行を確認してください。`, 1); }
     saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawBoard(); drawTimelines();
   } catch (e) {
-    console.error(e);
-    setStatus('音声認識でエラーが発生しました:' + e.message);
+    if (e.message === 'CANCELLED' || App.asrCancel) { setStatus('中止しました(ここまでの結果は保存しました)'); saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawTimelines(); }
+    else { console.error(e); setStatus('音声認識でエラーが発生しました:' + e.message); }
   } finally { const c = $('#au-cancel'); if (c) c.style.display = 'none'; }
 };
 // 1つのまとまりの認識結果を読みに反映
