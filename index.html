@@ -198,7 +198,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25c</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25d</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -399,7 +399,7 @@ function replay(match) {
     const pos = invertBoard(board);
     const unread = new Set(ALL_CARDS.filter(n => !readSet.has(n)));
     const c = r.card;
-    const st = { i, read: r, before, warnings: [], sends: [], moves: [] };
+    const st = { i, read: r, before, warnings: [], sends: [], moves: [], noLayout: !Object.keys(match.layout || {}).length };
     st.isJo = c === 0;
     if (c > 0) {
       st.kimariLen = kimariLen(c, unread);
@@ -1624,12 +1624,16 @@ async function rejudgeReads(m, onStatus) {
     assign.set(i, no); used.add(no);
   }
   let assigned = 0, removed = 0;
+  // 最後に札が特定できた読みより後ろの、照合できない行(試合後の会話など)は外す
+  let lastIdx = -1;
+  reads.forEach((r, i) => { if (assign.has(i) || (isManual(r) && r.card != null)) lastIdx = i; });
+  const trailing = i => lastIdx >= 0 && i > lastIdx && !cand[i].size;
   const keep = [];
   reads.forEach((r, i) => {
     if (!isManual(r)) {
       const top = [...cand[i].entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([no, s]) => [no, +Math.min(1, s).toFixed(2)]);
       if (assign.has(i)) { r.card = assign.get(i); r.cardSrc = 'auto'; r.cand = top; assigned++; }
-      else if (shimoOnly[i] && !hasWork(r)) { removed++; return; }
+      else if ((shimoOnly[i] || trailing(i)) && !hasWork(r)) { removed++; return; }
       else { r.card = null; r.cand = top; }
     } else if (r.card != null) assigned++;
     keep.push(r);
@@ -2270,7 +2274,7 @@ function drawEditor() {
       <span class="muted">#${App.sel + 1}</span>
       <span class="kim">${r.card === 0 ? '序歌' : r.card ? (st.kimari || STD_KIMARI[r.card]) : '札が未確定'}</span>
       ${r.card > 0 ? `<span class="pill">${st.kimariLen}字決まり</span>` : ''}
-      ${r.card > 0 ? (st.onField ? `<span class="pill ${st.fieldSide.toLowerCase()}">出札:${place}</span>` : '<span class="pill">空札</span>') : ''}
+      ${r.card > 0 ? (st.onField ? `<span class="pill ${st.fieldSide.toLowerCase()}">出札:${place}</span>` : (st.noLayout ? '<span class="pill" data-tip="初期配置を入力すると、出札か空札かを判定します">配置未入力</span>' : '<span class="pill">空札</span>')) : ''}
       <span class="spacer"></span>
       <button class="small" data-act="pickCard">札を選ぶ</button>
     </div>
@@ -2367,7 +2371,7 @@ function drawReads() {
     return `<tr data-i="${i}" class="${i === App.sel ? 'sel' : ''} ${low ? 'low' : ''}">
       <td class="muted">${i + 1}</td><td class="num">${fmtT(r.t)}</td>
       <td><b>${r.card === 0 ? '序歌' : r.card ? (st.kimari || STD_KIMARI[r.card]) : '未確定'}</b>${low && r.card != null ? ' <span data-tip="音声認識の確信度が低めです">?</span>' : ''}</td>
-      <td class="small">${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣' : '<span class="muted">空札</span>') : ''}</td>
+      <td class="small">${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣' : (st.noLayout ? '' : '<span class="muted">空札</span>')) : ''}</td>
       <td>${st.take ? `<span class="dot ${st.take.side.toLowerCase()}"></span>${esc(sideName(m, st.take.side))}` : ''}</td>
       <td>${st.faults.map(f => `<span class="dot ${f.side.toLowerCase()}"></span>`).join('')}</td>
       <td class="small">${st.sends.map(s => STD_KIMARI[s.card]).join('・')}</td>
@@ -2896,7 +2900,7 @@ function summaryHTML(m) {
       <div class="scroll" style="max-height:420px;overflow:auto"><table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>決まり字</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th class="num">残り(左-右)</th></tr>
       ${rp.steps.map(st => { const r = st.read; return `<tr><td class="muted">${st.i + 1}</td><td>${fmtT(r.t)}</td>
         <td>${r.card === 0 ? '序歌' : r.card ? esc(POEMS[r.card].kami.split(' ')[0]) : '未確定'}</td><td><b>${st.kimari || ''}</b></td>
-        <td>${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣 ' + (lrOf(st.slot.col) === 'L' ? '左' : '右') + ROW_NAMES[st.slot.row] : '空札') : ''}</td>
+        <td>${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣 ' + (lrOf(st.slot.col) === 'L' ? '左' : '右') + ROW_NAMES[st.slot.row] : (st.noLayout ? '' : '空札')) : ''}</td>
         <td>${st.take ? `<span class="dot ${st.take.side.toLowerCase()}"></span>${nm(st.take.side)}${st.take.own ? '' : '(敵陣)'}` : ''}</td>
         <td>${st.faults.map(f => nm(f.side)).join('、')}</td><td>${st.sends.map(s => STD_KIMARI[s.card]).join('・')}</td>
         <td class="num">${st.count.N}-${st.count.F}</td></tr>`; }).join('')}
