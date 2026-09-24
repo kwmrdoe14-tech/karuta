@@ -634,32 +634,534 @@ function winProb(board, unread, P, hands, side = 'N', n = P.sims, seed = 1) {
   return w / n;
 }
 
+// ===== MP4/MOVから音声だけを取り出す(大きな動画でもメモリを使いすぎない) =====
+// 動画全体は読み込まず、ファイルの構造(moov)を解析して音声データの位置だけを読み出す。
+async function readBytes(file, start, len) {
+  return new Uint8Array(await file.slice(start, start + len).arrayBuffer());
+}
+const fourcc = (u8, o) => String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]);
+function u32(u8, o) { return ((u8[o] << 24) >>> 0) + (u8[o + 1] << 16) + (u8[o + 2] << 8) + u8[o + 3]; }
+function u64(u8, o) { return u32(u8, o) * 4294967296 + u32(u8, o + 4); }
+function u16(u8, o) { return (u8[o] << 8) | u8[o + 1]; }
+function i32(u8, o) { return u32(u8, o) | 0; }
+
+// ファイル先頭から最上位のボックスを順にたどる(中身は読まない)
+async function topLevelBoxes(file) {
+  const boxes = [];
+  let pos = 0;
+  while (pos + 8 <= file.size && boxes.length < 10000) {
+    const h = await readBytes(file, pos, 16);
+    let size = u32(h, 0), hdr = 8;
+    const type = fourcc(h, 4);
+    if (size === 1) { size = u64(h, 8); hdr = 16; }
+    else if (size === 0) size = file.size - pos;
+    if (size < 8 || !/^[\x20-\x7e]{4}$/.test(type)) break;
+    boxes.push({ type, start: pos, size, hdr });
+    pos += size;
+  }
+  return boxes;
+}
+// メモリ上のボックスの子を列挙
+function children(u8, start, end) {
+  const out = [];
+  let p = start;
+  while (p + 8 <= end) {
+    let size = u32(u8, p), hdr = 8;
+    const type = fourcc(u8, p + 4);
+    if (size === 1) { size = u64(u8, p + 8); hdr = 16; }
+    else if (size === 0) size = end - p;
+    if (size < 8 || p + size > end) break;
+    out.push({ type, start: p, end: p + size, body: p + hdr });
+    p += size;
+  }
+  return out;
+}
+const child = (u8, box, type) => children(u8, box.body, box.end).find(b => b.type === type);
+function findBytes(u8, start, end, str) {
+  for (let i = start; i < end - 4; i++) if (fourcc(u8, i) === str) return i;
+  return -1;
+}
+
+// moovを解析して音声トラックの情報を返す
+const SUPPORTED_AUDIO = ['mp4a', 'sowt', 'twos', 'lpcm', 'in24', 'in32', 'fl32'];
+function parseAudioTrack(moov) {
+  let fallback = null;
+  const root = { body: 8, end: moov.length };
+  const mvhd = child(moov, root, 'mvhd');
+  const movieTs = mvhd ? (moov[mvhd.body] === 1 ? u32(moov, mvhd.body + 20) : u32(moov, mvhd.body + 12)) : 1000;
+  for (const trak of children(moov, root.body, root.end).filter(b => b.type === 'trak')) {
+    const mdia = child(moov, trak, 'mdia'); if (!mdia) continue;
+    const hdlr = child(moov, mdia, 'hdlr');
+    if (!hdlr || fourcc(moov, hdlr.body + 8) !== 'soun') continue;
+    const mdhd = child(moov, mdia, 'mdhd');
+    const ts = moov[mdhd.body] === 1 ? u32(moov, mdhd.body + 20) : u32(moov, mdhd.body + 12);
+    const minf = child(moov, mdia, 'minf'), stbl = minf && child(moov, minf, 'stbl');
+    if (!stbl) continue;
+    const S = t => child(moov, stbl, t);
+    // サンプル記述(コーデック)
+    const stsd = S('stsd');
+    const entry = children(moov, stsd.body + 8, stsd.end)[0];
+    const codec = fourcc(moov, entry.start + 4);
+    const e = entry.body; // SampleEntry本体
+    const ver = u16(moov, e + 8);
+    let channels = u16(moov, e + 16), bits = u16(moov, e + 18);
+    let rate = u32(moov, e + 24) / 65536;
+    if (ver === 2) { const dv = new DataView(moov.buffer, moov.byteOffset + e + 32, 8); rate = dv.getFloat64(0); channels = u32(moov, e + 40); bits = u32(moov, e + 48); }
+    let asc = null;
+    const esdsAt = findBytes(moov, e, entry.end, 'esds');
+    if (esdsAt > 0) asc = parseEsds(moov, esdsAt + 8, u32(moov, esdsAt - 4) + esdsAt - 4);
+    // サンプル表
+    const stsz = S('stsz');
+    const fixed = u32(moov, stsz.body + 4), count = u32(moov, stsz.body + 8);
+    let sizes = null;
+    if (!fixed) { sizes = new Uint32Array(count); for (let i = 0; i < count; i++) sizes[i] = u32(moov, stsz.body + 12 + i * 4); }
+    const stco = S('stco'), co64 = S('co64');
+    const offs = [];
+    if (stco) { const n = u32(moov, stco.body + 4); for (let i = 0; i < n; i++) offs.push(u32(moov, stco.body + 8 + i * 4)); }
+    else { const n = u32(moov, co64.body + 4); for (let i = 0; i < n; i++) offs.push(u64(moov, co64.body + 8 + i * 8)); }
+    const stsc = S('stsc'), nsc = u32(moov, stsc.body + 4), sc = [];
+    for (let i = 0; i < nsc; i++) sc.push([u32(moov, stsc.body + 8 + i * 12), u32(moov, stsc.body + 12 + i * 12)]);
+    // 各チャンク(連続した音声データの塊)の位置とサンプル数
+    const chunks = [];
+    let si = 0;
+    let k = 0;
+    for (let c = 0; c < offs.length; c++) {
+      while (k + 1 < sc.length && c + 1 >= sc[k + 1][0]) k++;
+      const spc = sc[k][1];
+      chunks.push({ off: offs[c], first: si, n: spc });
+      si += spc;
+    }
+    // stts(1サンプルあたりの長さ。AACは通常1024)
+    const stts = S('stts');
+    const sttsDelta = stts && u32(moov, stts.body + 4) ? u32(moov, stts.body + 12) : 1024;
+    // 編集リスト(音声の開始位置のずれ)
+    let startOffset = 0;
+    const edts = child(moov, trak, 'edts'), elst = edts && child(moov, edts, 'elst');
+    if (elst) {
+      const v = moov[elst.body], n = u32(moov, elst.body + 4);
+      let p = elst.body + 8;
+      for (let i = 0; i < n; i++) {
+        const dur = v === 1 ? u64(moov, p) : u32(moov, p);
+        const mt = v === 1 ? u64(moov, p + 8) : i32(moov, p + 4);
+        p += v === 1 ? 20 : 12;
+        if (mt === -1 || mt === 0xffffffff) startOffset += dur / movieTs;
+        else { startOffset -= mt / ts; break; }
+      }
+    }
+    const T = { codec, channels, bits, rate, ts, asc, sizes, fixed, chunks, sttsDelta, startOffset, count, size: i => (sizes ? sizes[i] : fixed) };
+    // 空間オーディオ等の未対応トラックより、AAC/PCMのトラックを優先
+    if (SUPPORTED_AUDIO.includes(codec) && count > 0) return T;
+    fallback = fallback || T;
+  }
+  return fallback;
+}
+function parseEsds(u8, p, end) {
+  p += 4; // version/flags
+  const readLen = () => { let n = 0; for (let k = 0; k < 4; k++) { const b = u8[p++]; n = (n << 7) | (b & 0x7f); if (!(b & 0x80)) break; } return n; };
+  while (p < end) {
+    const tag = u8[p++]; const len = readLen();
+    if (tag === 0x03) { const flags = u8[p + 2]; p += 3; if (flags & 0x80) p += 2; if (flags & 0x40) p += 1 + u8[p]; if (flags & 0x20) p += 2; continue; }
+    if (tag === 0x04) { p += 13; continue; }
+    if (tag === 0x05) {
+      const aot0 = u8[p] >> 3;
+      let sfi = ((u8[p] & 7) << 1) | (u8[p + 1] >> 7);
+      const ch = (u8[p + 1] >> 3) & 15;
+      return { aot: aot0, sfi, ch, raw: u8.slice(p, p + len) };
+    }
+    p += len;
+  }
+  return null;
+}
+const SF_TABLE = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+function adtsHeader(asc, len) {
+  const profile = (asc.aot >= 1 && asc.aot <= 4 ? asc.aot : 2) - 1;
+  const L = len + 7, h = new Uint8Array(7);
+  h[0] = 0xff; h[1] = 0xf1;
+  h[2] = (profile << 6) | (asc.sfi << 2) | ((asc.ch >> 2) & 1);
+  h[3] = ((asc.ch & 3) << 6) | ((L >> 11) & 3);
+  h[4] = (L >> 3) & 0xff;
+  h[5] = ((L & 7) << 5) | 0x1f;
+  h[6] = 0xfc;
+  return h;
+}
+// 離れた小さな範囲をまとめて読む(読み出し回数を減らして高速化)
+async function readRanges(file, ranges) {
+  const out = new Array(ranges.length);
+  let i = 0;
+  while (i < ranges.length) {
+    const start = ranges[i].off;
+    let j = i, end = ranges[i].off + ranges[i].len;
+    while (j + 1 < ranges.length && ranges[j + 1].off >= end && ranges[j + 1].off - end <= 1 << 20 && ranges[j + 1].off + ranges[j + 1].len - start <= 16 << 20) {
+      j++; end = ranges[j].off + ranges[j].len;
+    }
+    const buf = await readBytes(file, start, end - start);
+    for (let k = i; k <= j; k++) out[k] = buf.subarray(ranges[k].off - start, ranges[k].off - start + ranges[k].len);
+    i = j + 1;
+  }
+  return out;
+}
+// 音声サンプル[a,b)の生データを読み出す
+async function readSamples(file, T, a, b) {
+  const ranges = [], meta = [];
+  for (const ch of T.chunks) {
+    if (ch.first + ch.n <= a || ch.first >= b) continue;
+    let off = ch.off;
+    for (let s = ch.first; s < ch.first + ch.n && s < a; s++) off += T.size(s);
+    const s0 = Math.max(a, ch.first), s1 = Math.min(b, ch.first + ch.n);
+    let len = 0; for (let s = s0; s < s1; s++) len += T.size(s);
+    ranges.push({ off, len }); meta.push([s0, s1]);
+  }
+  const bufs = await readRanges(file, ranges);
+  const out = [];
+  bufs.forEach((buf, k) => {
+    let p = 0;
+    for (let s = meta[k][0]; s < meta[k][1]; s++) { out.push(buf.subarray(p, p + T.size(s))); p += T.size(s); }
+  });
+  return out;
+}
+function resampleMono(ab, outRate) {
+  const n = ab.length, chs = ab.numberOfChannels;
+  const mono = new Float32Array(n);
+  for (let c = 0; c < chs; c++) { const d = ab.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / chs; }
+  if (ab.sampleRate === outRate) return mono;
+  const ratio = ab.sampleRate / outRate, m = Math.floor(n / ratio), out = new Float32Array(m);
+  for (let i = 0; i < m; i++) {
+    const x = i * ratio, k = Math.floor(x), f = x - k;
+    out[i] = mono[k] * (1 - f) + (mono[k + 1] ?? mono[k]) * f;
+  }
+  return out;
+}
+
+// メイン:動画ファイル → 16kHzモノラル(Int16Array)
+async function extractAudio16k(file, onProgress) {
+  const SR = 16000;
+  const boxes = await topLevelBoxes(file);
+  const mv = boxes.find(b => b.type === 'moov');
+  if (!mv) throw new Error('UNSUPPORTED_CONTAINER');
+  if (mv.size > 400e6) throw new Error('moovが大きすぎます');
+  const moov = await readBytes(file, mv.start, mv.size);
+  const T = parseAudioTrack(moov);
+  if (!T) throw new Error('この動画には音声トラックがありません');
+  const duration = T.count * T.sttsDelta / T.ts;
+  const out = new Int16Array(Math.ceil((duration + Math.max(0, T.startOffset) + 1) * SR));
+  const put = (f32, t0) => {
+    let i0 = Math.round(t0 * SR);
+    for (let i = 0; i < f32.length; i++) {
+      const j = i0 + i; if (j < 0 || j >= out.length) continue;
+      out[j] = Math.max(-32768, Math.min(32767, f32[i] * 32767));
+    }
+  };
+  const ctx = typeof OfflineAudioContext !== 'undefined' ? new OfflineAudioContext(1, 1, 44100) : null;
+  if (T.codec === 'mp4a') {
+    if (!T.asc) throw new Error('AACの設定情報が見つかりません');
+    const frameDur = T.sttsDelta / T.ts;
+    const STEP = 1500, PRE = 2; // 約30秒ずつ、前2フレームを重ねてデコード
+    let useWC = false, wc = null;
+    for (let a = 0; a < T.count; a += STEP) {
+      const b = Math.min(T.count, a + STEP), a0 = Math.max(0, a - PRE);
+      if (!useWC) {
+        const frames = await readSamples(file, T, a0, b);
+        let total = 0; frames.forEach(f => total += f.length + 7);
+        const adts = new Uint8Array(total);
+        let p = 0;
+        for (const f of frames) { adts.set(adtsHeader(T.asc, f.length), p); adts.set(f, p + 7); p += f.length + 7; }
+        try {
+          const ab = await ctx.decodeAudioData(adts.buffer);
+          const mono = resampleMono(ab, SR);
+          // 末尾基準で必要な長さだけ使う(先頭のデコーダ遅延の影響を避ける)
+          const need = Math.round((b - a) * frameDur * SR);
+          const seg = mono.subarray(Math.max(0, mono.length - need));
+          put(seg, a * frameDur + T.startOffset + (need - seg.length) / SR);
+        } catch (e) {
+          if (!window.AudioDecoder || !T.asc.raw) throw new Error('AAC音声のデコードに失敗しました(' + e.message + ')');
+          useWC = true; // WebCodecsで最初からやり直す
+          a = -STEP; continue;
+        }
+      } else {
+        // WebCodecs(AudioDecoder)でデコード
+        if (!wc) {
+          const outs = [];
+          let err = null;
+          const dec = new AudioDecoder({ output: d => outs.push(d), error: e => { err = e; } });
+          dec.configure({ codec: 'mp4a.40.' + T.asc.aot, sampleRate: SF_TABLE[T.asc.sfi] || T.rate, numberOfChannels: T.asc.ch || T.channels, description: T.asc.raw });
+          wc = { dec, outs, get err() { return err; } };
+        }
+        const frames = await readSamples(file, T, a, b);
+        frames.forEach((f, k) => wc.dec.decode(new EncodedAudioChunk({ type: 'key', timestamp: Math.round((a + k) * frameDur * 1e6), data: f })));
+        await wc.dec.flush();
+        if (wc.err) throw new Error('AAC音声のデコードに失敗しました(' + wc.err.message + ')');
+        for (const d of wc.outs.splice(0)) {
+          const n = d.numberOfFrames, chs = d.numberOfChannels, mono = new Float32Array(n), tmp = new Float32Array(n);
+          for (let c = 0; c < chs; c++) { d.copyTo(tmp, { planeIndex: c, format: 'f32-planar' }); for (let i = 0; i < n; i++) mono[i] += tmp[i] / chs; }
+          const fake = { length: n, numberOfChannels: 1, sampleRate: d.sampleRate, getChannelData: () => mono };
+          put(resampleMono(fake, SR), d.timestamp / 1e6 + T.startOffset);
+          d.close();
+        }
+      }
+      onProgress?.(b / T.count);
+      await new Promise(r => setTimeout(r, 0));
+    }
+    if (wc) wc.dec.close();
+  } else if (['sowt', 'twos', 'lpcm', 'in24', 'in32', 'fl32'].includes(T.codec)) {
+    // 非圧縮PCM
+    const bps = T.codec === 'in24' ? 3 : T.codec === 'in32' || T.codec === 'fl32' ? 4 : Math.max(1, (T.bits || 16) / 8);
+    const le = T.codec === 'sowt' || T.codec === 'lpcm';
+    const chs = T.channels || 2, rate = T.rate || T.ts;
+    const bytesPerFrame = bps * chs;
+    const BATCH = 2000;
+    for (let c0 = 0; c0 < T.chunks.length; c0 += BATCH) {
+      const cs = T.chunks.slice(c0, c0 + BATCH);
+      const bufs = await readRanges(file, cs.map(ch => ({ off: ch.off, len: ch.n * bytesPerFrame })));
+      cs.forEach((ch, k) => {
+        const buf = bufs[k];
+        const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+        const frames = Math.floor(buf.length / bytesPerFrame);
+        const ratio = rate / SR, m = Math.floor(frames / ratio);
+        const f32 = new Float32Array(m);
+        for (let i = 0; i < m; i++) {
+          const fi = Math.floor(i * ratio) * bytesPerFrame;
+          let s = 0;
+          for (let c = 0; c < chs; c++) {
+            const o = fi + c * bps;
+            if (bps === 2) s += dv.getInt16(o, le) / 32768;
+            else if (bps === 3) s += ((le ? (buf[o + 2] << 16 | buf[o + 1] << 8 | buf[o]) : (buf[o] << 16 | buf[o + 1] << 8 | buf[o + 2])) << 8 >> 8) / 8388608;
+            else if (T.codec === 'fl32') s += dv.getFloat32(o, le);
+            else s += dv.getInt32(o, le) / 2147483648;
+          }
+          f32[i] = s / chs;
+        }
+        put(f32, ch.first / rate + T.startOffset);
+      });
+      onProgress?.(Math.min(1, (c0 + BATCH) / T.chunks.length));
+      await new Promise(r => setTimeout(r, 0));
+    }
+  } else {
+    throw new Error(`この動画の音声形式(${T.codec})にはまだ対応していません`);
+  }
+  return { data: out, sr: SR, duration };
+}
+
+// ===== カット動画の高速書き出し(再エンコードなし) =====
+// 元の動画の映像・音声データをそのまま切り貼りして新しいMP4を作る。
+// 実データはファイルの一部(File.slice)を参照するだけなので、数GBの動画でもメモリをほとんど使わない。
+
+function trackTables(moov, trak) {
+  const mdia = child(moov, trak, 'mdia');
+  const hdlrBox = child(moov, mdia, 'hdlr');
+  const handler = fourcc(moov, hdlrBox.body + 8);
+  const mdhd = child(moov, mdia, 'mdhd');
+  const ts = moov[mdhd.body] === 1 ? u32(moov, mdhd.body + 20) : u32(moov, mdhd.body + 12);
+  const minf = child(moov, mdia, 'minf'), stbl = child(moov, minf, 'stbl');
+  const S = t => child(moov, stbl, t);
+  const stsz = S('stsz');
+  const fixed = u32(moov, stsz.body + 4), n = u32(moov, stsz.body + 8);
+  const size = new Uint32Array(n);
+  for (let i = 0; i < n; i++) size[i] = fixed || u32(moov, stsz.body + 12 + i * 4);
+  const dts = new Float64Array(n + 1), dur = new Uint32Array(n);
+  { const b = S('stts'), m = u32(moov, b.body + 4); let k = 0, t = 0;
+    for (let e = 0; e < m; e++) { const c = u32(moov, b.body + 8 + e * 8), d = u32(moov, b.body + 12 + e * 8); for (let j = 0; j < c && k < n; j++) { dts[k] = t; dur[k] = d; t += d; k++; } }
+    dts[n] = t; }
+  let cto = null, cttsVer = 0;
+  { const b = S('ctts'); if (b) { cttsVer = moov[b.body]; cto = new Int32Array(n); const m = u32(moov, b.body + 4); let k = 0;
+    for (let e = 0; e < m; e++) { const c = u32(moov, b.body + 8 + e * 8), o = cttsVer ? i32(moov, b.body + 12 + e * 8) : u32(moov, b.body + 12 + e * 8); for (let j = 0; j < c && k < n; j++) cto[k++] = o; } } }
+  let sync = null;
+  { const b = S('stss'); if (b) { sync = new Uint8Array(n); const m = u32(moov, b.body + 4); for (let e = 0; e < m; e++) sync[u32(moov, b.body + 8 + e * 4) - 1] = 1; } }
+  const off = new Float64Array(n);
+  { const co = S('stco') || S('co64'), big = co.type === 'co64', m = u32(moov, co.body + 4);
+    const sc = S('stsc'), nsc = u32(moov, sc.body + 4), ent = [];
+    for (let i = 0; i < nsc; i++) ent.push([u32(moov, sc.body + 8 + i * 12), u32(moov, sc.body + 12 + i * 12)]);
+    let si = 0, k = 0;
+    for (let c = 0; c < m && si < n; c++) {
+      while (k + 1 < ent.length && c + 1 >= ent[k + 1][0]) k++;
+      let o = big ? u64(moov, co.body + 8 + c * 8) : u32(moov, co.body + 8 + c * 4);
+      for (let j = 0; j < ent[k][1] && si < n; j++) { off[si] = o; o += size[si]; si++; }
+    }
+  }
+  // 編集リストの先頭メディア時間
+  let mediaStart = 0, emptyStart = 0;
+  const edts = child(moov, trak, 'edts'), elst = edts && child(moov, edts, 'elst');
+  if (elst) {
+    const v = moov[elst.body], m = u32(moov, elst.body + 4); let p = elst.body + 8;
+    for (let i = 0; i < m; i++) {
+      const d = v === 1 ? u64(moov, p) : u32(moov, p), mt = v === 1 ? u64(moov, p + 8) : i32(moov, p + 4);
+      p += v === 1 ? 20 : 12;
+      if (mt === -1 || mt === 0xffffffff) emptyStart += d; else { mediaStart = mt; break; }
+    }
+  }
+  const raw = b => moov.slice(b.start, b.end);
+  return { handler, ts, n, size, dts, dur, cto, cttsVer, sync, off, fixed, mediaStart, emptyStart,
+    boxes: { tkhd: raw(child(moov, trak, 'tkhd')), mdhd: raw(mdhd), hdlr: raw(hdlrBox), stsd: raw(S('stsd')),
+      mhd: raw(children(moov, minf.body, minf.end).find(b => /^(vmhd|smhd|nmhd|gmhd)$/.test(b.type))), dinf: raw(child(moov, minf, 'dinf')) } };
+}
+
+// ---- ボックス書き出しの小道具 ----
+function bx(type, ...parts) {
+  const len = 8 + parts.reduce((a, p) => a + p.length, 0);
+  const o = new Uint8Array(len), dv = new DataView(o.buffer);
+  dv.setUint32(0, len); for (let i = 0; i < 4; i++) o[4 + i] = type.charCodeAt(i);
+  let p = 8; for (const x of parts) { o.set(x, p); p += x.length; }
+  return o;
+}
+function u32a(vals) { const o = new Uint8Array(vals.length * 4), dv = new DataView(o.buffer); for (let i = 0; i < vals.length; i++) dv.setUint32(i * 4, vals[i] >>> 0); return o; }
+function u32s(...vals) { return u32a(vals); }
+function fullbox(type, ver, flags, body) { return bx(type, u32s(((ver & 255) << 24) | flags), body); }
+function patch32(box, at, v) { new DataView(box.buffer, box.byteOffset).setUint32(at, v >>> 0); return box; }
+
+function fastCutMP4(moovBytes, cuts, ftypBytes) {
+  const root = { body: 8, end: moovBytes.length };
+  const traks = children(moovBytes, root.body, root.end).filter(b => b.type === 'trak').map(t => trackTables(moovBytes, t));
+  const V = traks.find(t => t.handler === 'vide');
+  const A = traks.find(t => t.handler === 'soun');
+  if (!V || !V.sync) throw new Error('UNSUPPORTED');
+  if (A && A.fixed && A.fixed <= 8) throw new Error('UNSUPPORTED'); // 非圧縮PCMは録画方式で
+  const vpts = i => (V.dts[i] + (V.cto ? V.cto[i] : 0) - V.mediaStart) / V.ts + V.emptyStart / 1000;
+  // 区間ごとに使うサンプル範囲を決める
+  const segs = [];
+  let aCursorTime = 0, vTotal = 0;
+  const aDur = A ? A.dur[0] / A.ts : 0;
+  const aTime = i => (A.dts[i] - A.mediaStart) / A.ts;
+  // まず映像サンプルの範囲を決め、キーフレームに合わせた結果重なる区間はまとめる
+  const vr = [];
+  for (const [s, e] of cuts) {
+    let k0 = 0;
+    for (let i = 0; i < V.n; i++) { if (V.sync[i] && vpts(i) <= s + 1e-6) k0 = i; if (V.dts[i] / V.ts > s + 30) break; }
+    // 終わりは e 以降の最初のキーフレームの手前まで(Bフレームが途中で切れないように)
+    let k1 = k0 + 1;
+    while (k1 < V.n && !(V.sync[k1] && vpts(k1) >= e - 1e-6)) k1++;
+    if (k1 <= k0) continue;
+    const l = vr[vr.length - 1];
+    if (l && k0 <= l[1]) l[1] = Math.max(l[1], k1); else vr.push([k0, k1]);
+  }
+  for (const [k0, k1] of vr) {
+    const segStart = vpts(k0) - V.emptyStart / 1000;
+    const vDur = (V.dts[k1] - V.dts[k0]) / V.ts;
+    const seg = { v: [k0, k1], a: null };
+    if (A) {
+      let a0 = 0;
+      while (a0 < A.n && aTime(a0) < segStart - aDur / 2) a0++;
+      const target = vTotal + vDur;
+      const cnt = Math.max(0, Math.round((target - aCursorTime) / aDur));
+      const a1 = Math.min(A.n, a0 + cnt);
+      seg.a = [a0, a1];
+      aCursorTime += (a1 - a0) * aDur;
+    }
+    vTotal += vDur;
+    segs.push(seg);
+  }
+  if (!segs.length) throw new Error('書き出す区間がありません');
+  // 出力するデータ片(元ファイルでの位置)をファイル順に並べ、連続する部分はまとめる
+  const pieces = [];
+  const addSamples = (T, a, b, tr) => { for (let i = a; i < b; i++) pieces.push({ off: T.off[i], len: T.size[i], tr, i }); };
+  for (const sg of segs) {
+    const start = pieces.length;
+    addSamples(V, sg.v[0], sg.v[1], 0);
+    if (sg.a) addSamples(A, sg.a[0], sg.a[1], 1);
+    const part = pieces.splice(start).sort((x, y) => x.off - y.off);
+    for (const x of part) pieces.push(x);
+  }
+  // 出力側のチャンク:同じトラックが続く間を1チャンクとする
+  const chunks = [[], []]; // tr -> [{firstIdxInOut, count, pieceStart}]
+  const order = { 0: [], 1: [] };
+  let prevTr = -1;
+  pieces.forEach((p, k) => {
+    order[p.tr].push(p.i);
+    if (p.tr !== prevTr) { chunks[p.tr].push({ k, count: 0 }); prevTr = p.tr; }
+    chunks[p.tr][chunks[p.tr].length - 1].count++;
+  });
+  // サンプル表を作る
+  const buildStbl = (T, idx, trChunks, isVideo) => {
+    const n = idx.length;
+    // stts
+    const durs = idx.map((i, j) => { const nx = idx[j + 1]; return nx === i + 1 ? T.dur[i] : T.dur[i]; });
+    const stts = []; durs.forEach(d => { const l = stts[stts.length - 1]; if (l && l[1] === d) l[0]++; else stts.push([1, d]); });
+    const parts = [T.boxes.stsd];
+    parts.push(fullbox('stts', 0, 0, u32a([stts.length].concat(stts.flat()))));
+    if (isVideo && T.cto) {
+      const c = []; idx.forEach(i => { const o = T.cto[i]; const l = c[c.length - 1]; if (l && l[1] === o) l[0]++; else c.push([1, o]); });
+      parts.push(fullbox('ctts', T.cttsVer, 0, u32a([c.length].concat(c.flat()))));
+    }
+    if (isVideo && T.sync) { const ss = []; idx.forEach((i, j) => { if (T.sync[i]) ss.push(j + 1); }); parts.push(fullbox('stss', 0, 0, u32a([ss.length].concat(ss)))); }
+    const sc = []; trChunks.forEach((c, j) => { const l = sc[sc.length - 1]; if (!l || l[1] !== c.count) sc.push([j + 1, c.count, 1]); });
+    parts.push(fullbox('stsc', 0, 0, u32a([sc.length].concat(sc.flat()))));
+    parts.push(fullbox('stsz', 0, 0, u32a([0, n].concat(idx.map(i => T.size[i])))));
+    const co = new Uint8Array(4 + trChunks.length * 8);
+    parts.push({ co64: true, len: co.length + 12, chunks: trChunks });
+    return { parts, duration: durs.reduce((a, d) => a + d, 0) };
+  };
+  const tracks = [{ T: V, idx: order[0], ch: chunks[0], video: true }];
+  if (A && order[1].length) tracks.push({ T: A, idx: order[1], ch: chunks[1], video: false });
+  const built = tracks.map(t => ({ ...t, ...buildStbl(t.T, t.idx, t.ch, t.video) }));
+  const movieDurMs = Math.round(Math.max(...built.map(b => b.duration / b.T.ts)) * 1000);
+  // moovの組み立て(co64の中身は後で埋める)
+  const assemble = pieceOffsets => {
+    const trakBoxes = built.map((b, ti) => {
+      const stblParts = b.parts.map(p => {
+        if (!p.co64) return p;
+        return fullbox('co64', 0, 0, (() => { const o = new Uint8Array(4 + p.chunks.length * 8), dv = new DataView(o.buffer); dv.setUint32(0, p.chunks.length);
+          p.chunks.forEach((c, j) => { const v = pieceOffsets ? pieceOffsets[c.k] : 0; dv.setUint32(4 + j * 8, Math.floor(v / 4294967296)); dv.setUint32(8 + j * 8, v % 4294967296); }); return o; })());
+      });
+      const tkhd = b.T.boxes.tkhd.slice();
+      if (tkhd[8] === 1) { patch32(tkhd, 36, 0); patch32(tkhd, 40, movieDurMs); } else patch32(tkhd, 28, movieDurMs);
+      const mdhd = b.T.boxes.mdhd.slice();
+      if (mdhd[8] === 1) { patch32(mdhd, 32, 0); patch32(mdhd, 36, b.duration); } else patch32(mdhd, 24, b.duration);
+      // 映像はBフレームの表示遅延分を編集リストで打ち消す
+      const first = b.video && b.T.cto ? b.T.cto[b.idx[0]] : 0;
+      const edts = bx('edts', fullbox('elst', 0, 0, u32s(1, movieDurMs, first, 0x00010000)));
+      return bx('trak', tkhd, edts, bx('mdia', mdhd, b.T.boxes.hdlr, bx('minf', b.T.boxes.mhd, b.T.boxes.dinf, bx('stbl', ...stblParts))));
+    });
+    const mvhd = fullbox('mvhd', 0, 0, (() => { const o = new Uint8Array(96), dv = new DataView(o.buffer);
+      dv.setUint32(8, 1000); dv.setUint32(12, movieDurMs); dv.setUint32(16, 0x00010000); dv.setUint16(20, 0x0100);
+      [0x00010000, 0, 0, 0, 0x00010000, 0, 0, 0, 0x40000000].forEach((v, i) => dv.setUint32(32 + i * 4, v)); dv.setUint32(92, 3); return o; })());
+    return bx('moov', mvhd, ...trakBoxes);
+  };
+  const ftyp = ftypBytes || bx('ftyp', new TextEncoder().encode('isom'), u32s(512), new TextEncoder().encode('isomiso2avc1mp41'));
+  const moovSize = assemble(null).length;
+  let total = 0; pieces.forEach(p => total += p.len);
+  const mdatHdr = new Uint8Array(16), dv = new DataView(mdatHdr.buffer);
+  dv.setUint32(0, 1); mdatHdr.set([0x6d, 0x64, 0x61, 0x74], 4); dv.setUint32(8, Math.floor((total + 16) / 4294967296)); dv.setUint32(12, (total + 16) % 4294967296);
+  const offs = []; let pos = ftyp.length + moovSize + 16;
+  pieces.forEach(p => { offs.push(pos); pos += p.len; });
+  const moov = assemble(offs);
+  // 元ファイルで連続している部分は1つにまとめて参照
+  const ranges = [];
+  pieces.forEach(p => { const l = ranges[ranges.length - 1]; if (l && l[1] === p.off) l[1] += p.len; else ranges.push([p.off, p.off + p.len]); });
+  return { head: [ftyp, moov, mdatHdr], ranges, duration: movieDurMs / 1000, segments: segs.length, size: pos };
+}
+
+async function exportCutFast(file, cuts) {
+  const boxes = await topLevelBoxes(file);
+  const mv = boxes.find(b => b.type === 'moov');
+  if (!mv || boxes.some(b => b.type === 'moof')) throw new Error('UNSUPPORTED');
+  const moov = await readBytes(file, mv.start, mv.size);
+  const fb = boxes.find(b => b.type === 'ftyp');
+  const ftyp = fb && fb.size < 4096 ? await readBytes(file, fb.start, fb.size) : null;
+  const r = fastCutMP4(moov, cuts, ftyp);
+  const isMov = ftyp && fourcc(ftyp, 8) === 'qt  ';
+  const blob = new Blob(r.head.concat(r.ranges.map(([a, b]) => file.slice(a, b))), { type: isMov ? 'video/quicktime' : 'video/mp4' });
+  return { blob, ext: isMov ? 'mov' : 'mp4', ...r };
+}
+
 // ===== 音声解析 =====
 const Audio16 = { data: null, sr: 16000, key: null };
 
 async function decodeVideoAudio(file, onStatus) {
-  const key = file.name + ':' + file.size;
+  const key = file.name + ':' + file.size + ':' + file.lastModified;
   if (Audio16.key === key && Audio16.data) return Audio16;
-  onStatus?.('動画から音声を読み込み中…(大きな動画は時間がかかります)');
-  const buf = await file.arrayBuffer();
-  onStatus?.('音声をデコード中…');
-  const ctx = new OfflineAudioContext(1, 16000, 16000);
-  const ab = await ctx.decodeAudioData(buf);
-  let data;
-  if (ab.sampleRate === 16000) {
-    data = new Float32Array(ab.length);
-    for (let ch = 0; ch < ab.numberOfChannels; ch++) {
-      const d = ab.getChannelData(ch);
-      for (let i = 0; i < d.length; i++) data[i] += d[i] / ab.numberOfChannels;
-    }
-  } else {
-    // 念のため16kHzへリサンプリング
-    const off = new OfflineAudioContext(1, Math.ceil(ab.duration * 16000), 16000);
-    const src = off.createBufferSource(); src.buffer = ab; src.connect(off.destination); src.start();
-    const rb = await off.startRendering();
-    data = rb.getChannelData(0).slice();
+  onStatus?.('動画から音声を取り出しています…', 0);
+  let res;
+  try {
+    res = await extractAudio16k(file, p => onStatus?.(`動画から音声を取り出しています… ${Math.round(p * 100)}%`, p));
+  } catch (e) {
+    if (e.message !== 'UNSUPPORTED_CONTAINER') throw e;
+    // MP4/MOV以外(WebMなど)は従来の方法。大きすぎる場合は案内する
+    if (file.size > 1.5e9) throw new Error('この形式の動画(MP4/MOV以外)は1.5GBまでです。MP4またはMOVで保存した動画をお使いください');
+    onStatus?.('音声をデコード中…', 0.3);
+    const ab = await new OfflineAudioContext(1, 1, 16000).decodeAudioData(await file.arrayBuffer());
+    const f = resampleMono(ab, 16000), d = new Int16Array(f.length);
+    for (let i = 0; i < f.length; i++) d[i] = Math.max(-32768, Math.min(32767, f[i] * 32767));
+    res = { data: d, sr: 16000 };
   }
-  Object.assign(Audio16, { data, sr: 16000, key });
+  Object.assign(Audio16, { data: res.data, sr: 16000, key });
   return Audio16;
 }
 
@@ -670,7 +1172,7 @@ function energyDb(data, sr, hop = 0.02) {
   for (let i = 0; i < len; i++) {
     let s = 0;
     for (let j = i * n; j < (i + 1) * n; j++) s += data[j] * data[j];
-    out[i] = 10 * Math.log10(s / n + 1e-10);
+    out[i] = 10 * Math.log10(s / n / (data instanceof Int16Array ? 1073741824 : 1) + 1e-10);
   }
   return out;
 }
@@ -781,7 +1283,7 @@ async function loadASR(model, onStatus) {
 }
 async function transcribe(pipe, data, sr, s, e) {
   const a = Math.max(0, Math.floor((s - 0.3) * sr)), b = Math.min(data.length, Math.floor((e + 0.3) * sr));
-  const seg = data.slice(a, b);
+  const seg = data instanceof Int16Array ? Float32Array.from(data.subarray(a, b), v => v / 32768) : data.slice(a, b);
   const out = await pipe(seg, { language: 'japanese', task: 'transcribe', return_timestamps: true, chunk_length_s: 30, stride_length_s: 5 });
   const off = a / sr;
   const chunks = (out.chunks || []).map(c => ({ text: c.text, s: (c.timestamp?.[0] ?? 0) + off, e: (c.timestamp?.[1] ?? (b - a) / sr) + off }));
@@ -1126,7 +1628,7 @@ function downloadBlob(blob, name) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = name;
   document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  setTimeout(() => URL.revokeObjectURL(a.href), 300000);
 }
 async function importFile(file) {
   try {
@@ -1675,7 +2177,7 @@ ACT.detect = async () => {
   const m = curMatch();
   if (!App.videoFile) return toast('先に動画を開いてください');
   try {
-    const A = await decodeVideoAudio(App.videoFile, t => setStatus(t, 0.1));
+    const A = await decodeVideoAudio(App.videoFile, (t, p) => setStatus(t, p));
     setStatus('音量を解析中…', 0.5);
     await new Promise(r => setTimeout(r, 20));
     App.energy = energyDb(A.data, A.sr);
@@ -1695,7 +2197,7 @@ ACT.detect = async () => {
     setStatus(`${units.length}か所の読みを検出しました。続けて②で札を特定できます。`, 1);
   } catch (e) {
     console.error(e);
-    setStatus('音声の読み込みに失敗しました:' + e.message + '(動画が大きすぎる場合は、音声だけを書き出したファイルでも試せます)', 0);
+    setStatus('音声の読み込みに失敗しました:' + e.message, 0);
   }
 };
 
@@ -1708,7 +2210,7 @@ ACT.runASR = async () => {
   App.asrCancel = false;
   $('#au-cancel').style.display = '';
   try {
-    const A = await decodeVideoAudio(App.videoFile, t => setStatus(t, 0));
+    const A = await decodeVideoAudio(App.videoFile, (t, p) => setStatus(t, p));
     const pipe = await loadASR(model, t => setStatus(t, 0));
     m.audio.model = model;
     const units = m.audio.units;
@@ -1791,7 +2293,7 @@ function cutPanelHTML(m) {
       <button class="primary" data-act="cutExport" ${cuts.length ? '' : 'disabled'}>カット動画を書き出す</button>
       <button data-act="cutList" ${cuts.length ? '' : 'disabled'}>区間リスト(ffmpeg用)</button>
     </div>
-    <div class="muted small">書き出しは再生しながら録画するため、カット後の長さと同じ時間がかかります。書き出し中はこのタブを表示したままにしてください。</div>
+    <div class="muted small">MP4・MOVの動画は画質を落とさずに数秒〜数十秒で書き出せます。映像の仕組み上、各区間は指定より少し前の「キーフレーム」から始まります(多くのカメラで1秒以内)。それ以外の形式は再生しながら録画するため、カット後の長さと同じ時間がかかります。</div>
   </div></details>`;
 }
 ACT.cutSet = el => {
@@ -1857,10 +2359,21 @@ ACT.cutExport = async () => {
   if (!v) return toast('先に動画を開いてください');
   const cuts = computeCuts(m);
   if (!cuts.length) return;
+  // まずは再エンコードなしの高速書き出しを試す(MP4/MOV)
+  try {
+    toast('カット動画を作成中…', 1500);
+    const r = await exportCutFast(App.videoFile, cuts);
+    downloadBlob(r.blob, `cut_${(m.date || '')}_${(m.title || 'match').replace(/[\\/:*?"<>|\s]/g, '_')}.${r.ext}`);
+    toast(`書き出しました(${fmtT(r.duration)}・${(r.size / 1e9).toFixed(2)}GB)`, 4000);
+    return;
+  } catch (e) {
+    console.warn('高速書き出しできないため録画方式に切り替え', e);
+    if (e.message !== 'UNSUPPORTED' && !confirm('高速書き出しに失敗しました(' + e.message + ')。再生しながら録画する方式で書き出しますか?')) return;
+  }
   const mime = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(t => window.MediaRecorder?.isTypeSupported?.(t));
   if (!mime) return alert('このブラウザは動画の書き出しに対応していません。「区間リスト」をお使いください。');
   const total = cuts.reduce((a, x) => a + x[1] - x[0], 0);
-  if (!confirm(`カット後の長さは ${fmtT(total)} です。書き出しには同じくらいの時間がかかります。始めますか?`)) return;
+  if (!confirm(`この動画の形式は高速書き出しに対応していないため、再生しながら録画して書き出します。\nカット後の長さは ${fmtT(total)} で、書き出しにも同じくらいの時間がかかります。始めますか?`)) return;
   App.cutMode = false;
   const W = Math.min(1280, v.videoWidth || 1280), H = Math.round(W * (v.videoHeight || 720) / (v.videoWidth || 1280));
   const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
