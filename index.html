@@ -198,7 +198,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25b</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -1405,6 +1405,38 @@ async function transcribe(data, sr, s, e) {
   return { text: out.text || '', chunks };
 }
 
+// 複数の短い区間を1回分(最大約29秒)にまとめて認識する。Whisperは毎回30秒分を計算するため、まとめるほど速い
+async function transcribePacked(data, sr, pieces) {
+  const PAD = 0.2, GAP = 1.0;
+  let total = 0;
+  const map = [];
+  for (const [s, e] of pieces) {
+    const a = Math.max(0, Math.floor((s - PAD) * sr)), b = Math.min(data.length, Math.floor((e + PAD) * sr));
+    map.push({ o0: total / sr, o1: (total + b - a) / sr, a, b, src0: a / sr });
+    total += (b - a) + Math.floor(GAP * sr);
+  }
+  const buf = new Float32Array(total);
+  for (const m of map) {
+    const off = Math.round(m.o0 * sr);
+    if (data instanceof Int16Array) for (let i = m.a; i < m.b; i++) buf[off + i - m.a] = data[i] / 32768;
+    else buf.set(data.subarray(m.a, m.b), off);
+  }
+  const id = ++ASR.seq;
+  const out = await new Promise((resolve, reject) => {
+    ASR.pending.set(id, { resolve, reject });
+    ASR.worker.postMessage({ type: 'run', id, audio: buf }, [buf.buffer]);
+  });
+  const toSrc = t => {
+    let best = map[0];
+    for (const m of map) if (t >= m.o0 - GAP / 2) best = m;
+    return best.src0 + Math.max(0, t - best.o0);
+  };
+  return (out.chunks || []).map(c => {
+    const t0 = c.timestamp?.[0] ?? 0, t1 = c.timestamp?.[1] ?? t0 + 3;
+    return { text: c.text, s: toSrc(t0), e: toSrc(Math.max(t0, t1 - 0.01)) };
+  });
+}
+
 // ===== アプリ状態 =====
 const App = {
   players: [], matches: [],
@@ -2277,7 +2309,8 @@ function audioPanelHTML(m) {
     </div>
     <div class="row">
       <select id="au-model">${ASR_MODELS.map(([k, l]) => `<option value="${k}" ${(a.model || ASR_MODELS[0][0]) === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
-      <button class="primary" data-act="runASR" ${a.units ? '' : 'disabled'}>② 札を音声認識</button>
+      <button class="primary" data-act="runASR" ${a.units ? '' : 'disabled'}>${(() => { const n = (a.asrDoneUnits || []).filter(Boolean).length; return n && a.units && n < a.units.length ? `② 続きから認識(${n} / ${a.units.length}済)` : '② 札を音声認識'; })()}</button>
+      ${(a.asrDoneUnits || []).some(Boolean) ? '<button class="small ghost" data-act="resetASR">最初からやり直す</button>' : ''}
       <button data-act="cancelASR" id="au-cancel" style="display:none">中止</button>
     </div>
     <div class="progress"><div id="au-prog"></div></div>
@@ -2300,7 +2333,7 @@ ACT.detect = async () => {
     const sens = +$('#au-sens').value;
     const segs = detectVoiced(App.energy, 0.02, sens);
     const units = groupUnits(segs);
-    m.audio = { ...(m.audio || {}), sens, segs: segs.map(s => s.map(x => +x.toFixed(2))), units: units.map(u => ({ s: +u.s.toFixed(2), e: +u.e.toFixed(2), subs: u.subs.map(s => s.map(x => +x.toFixed(2))) })), asrDone: false };
+    m.audio = { ...(m.audio || {}), sens, segs: segs.map(s => s.map(x => +x.toFixed(2))), units: units.map(u => ({ s: +u.s.toFixed(2), e: +u.e.toFixed(2), subs: u.subs.map(s => s.map(x => +x.toFixed(2))) })), asrDone: false, asrDoneUnits: [] };
     let replace = !m.reads.length;
     if (m.reads.length) replace = confirm(`${units.length}か所の読みを検出しました。\n今ある${m.reads.length}件の読みを、検出結果で置き換えますか?\n(キャンセル:区切り情報だけ保存し、読みの一覧はそのまま)`);
     if (replace) {
@@ -2316,42 +2349,80 @@ ACT.detect = async () => {
   }
 };
 
-ACT.cancelASR = () => { App.asrCancel = true; asrTerminate(); setStatus('中止しました'); };
+ACT.cancelASR = () => { App.asrCancel = true; asrTerminate(); };
+ACT.resetASR = () => {
+  const m = curMatch();
+  if (!m.audio) return;
+  if (!confirm('音声認識をすべてやり直しますか?(手動で直した札はそのまま残ります)')) return;
+  m.audio.asrDoneUnits = []; m.audio.asrDone = false; saveMatch(m, true);
+  saveVideoPos(); renderMatch();
+};
+window.addEventListener('beforeunload', e => { if (App.asrRunning) { e.preventDefault(); e.returnValue = ''; } });
 ACT.runASR = async () => {
   const m = curMatch();
   if (!App.videoFile) return toast('先に動画を開いてください');
   if (!m.audio?.units) return toast('先に①を実行してください');
   const model = $('#au-model').value;
-  App.asrCancel = false;
+  App.asrCancel = false; App.asrRunning = true;
   $('#au-cancel').style.display = '';
+  const units = m.audio.units;
+  const done = m.audio.asrDoneUnits = (m.audio.asrDoneUnits || []).slice(0, units.length);
+  units.forEach(u => delete u._chunks);
   try {
     const A = await decodeVideoAudio(App.videoFile, (t, p) => setStatus(t, p));
     await loadASR(model, t => setStatus(t, 0));
     m.audio.model = model;
-    const units = m.audio.units;
-    const t0 = performance.now();
-    for (let ui = 0; ui < units.length; ui++) {
-      if (App.asrCancel) { setStatus('中止しました'); break; }
+    // 未処理のまとまりを、約29秒ずつの束にまとめる
+    const todo = units.map((u, i) => i).filter(i => !done[i]);
+    const batches = [];
+    let cur = null;
+    for (const ui of todo) {
       const u = units[ui];
-      const eta = ui ? ((performance.now() - t0) / ui * (units.length - ui) / 1000) : null;
-      setStatus(`音声認識中… ${ui + 1} / ${units.length}${eta ? `(残り約${Math.ceil(eta / 60)}分)` : ''} [${ASR.device === 'webgpu' ? 'GPU' : 'CPU'}]`, ui / units.length);
-      // 30秒を超えるまとまりは分割
       const parts = [];
-      for (let s = u.s; s < u.e; s += 28) parts.push([s, Math.min(u.e, s + 28)]);
-      let chunks = [], text = '';
-      for (const [s, e] of parts) {
-        const out = await transcribe(A.data, A.sr, s, e);
-        chunks.push(...out.chunks); text += out.text;
+      for (let s = u.s; s < u.e; s += 26) parts.push([s, Math.min(u.e, s + 26)]);
+      for (const p of parts) {
+        const len = p[1] - p[0] + 1.4;
+        if (!cur || cur.len + len > 29) { cur = { pieces: [], units: new Set(), len: 0 }; batches.push(cur); }
+        cur.pieces.push(p); cur.units.add(ui); cur.len += len;
       }
-      applyASRUnit(m, u, text, chunks);
-      if (ui % 3 === 0) { refreshRP(); drawReads(); drawTimelines(); }
     }
-    if (!App.asrCancel) { m.audio.asrDone = true; setStatus(`音声認識が終わりました(${units.length}か所)。黄色の行を確認してください。`, 1); }
+    const t0 = performance.now();
+    const doneBefore = units.length - todo.length;
+    for (let bi = 0; bi < batches.length; bi++) {
+      if (App.asrCancel) break;
+      const eta = bi ? ((performance.now() - t0) / bi * (batches.length - bi) / 1000) : null;
+      const finished = doneBefore + batches.slice(0, bi).reduce((a, x) => a + x.units.size, 0);
+      setStatus(`音声認識中… ${Math.min(units.length, finished)} / ${units.length}か所 完了${eta ? `(残り約${Math.ceil(eta / 60)}分)` : ''} [${ASR.device === 'webgpu' ? 'GPU' : 'CPU'}]`, finished / units.length);
+      const B = batches[bi];
+      const chunks = await transcribePacked(A.data, A.sr, B.pieces);
+      // 束の最後のまとまりは、次の束に続いている場合があるので、全部そろってから反映
+      for (const ui of B.units) {
+        const u = units[ui];
+        const cs = chunks.filter(c => c.s >= u.s - 0.6 && c.s <= u.e + 0.3);
+        (u._chunks = u._chunks || []).push(...cs);
+        const last = B.pieces[B.pieces.length - 1];
+        const unitEnds = u.e <= last[1] + 0.01;
+        if (unitEnds) {
+          applyASRUnit(m, u, u._chunks.map(c => c.text).join(''), u._chunks);
+          delete u._chunks;
+          done[ui] = true;
+        }
+      }
+      saveMatch(m, true); // 1束ごとに保存(途中で閉じても続きから再開できる)
+      refreshRP(); drawReads(); drawTimelines();
+    }
+    units.forEach(u => delete u._chunks);
+    const nDone = done.filter(Boolean).length;
+    if (!App.asrCancel && nDone >= units.length) { m.audio.asrDone = true; setStatus(`音声認識が終わりました(${units.length}か所)。黄色の行を確認してください。`, 1); }
+    else setStatus(`中止しました(${nDone} / ${units.length}か所 完了。②を押すと続きから再開します)`, nDone / units.length);
     saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawBoard(); drawTimelines();
   } catch (e) {
-    if (e.message === 'CANCELLED' || App.asrCancel) { setStatus('中止しました(ここまでの結果は保存しました)'); saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawTimelines(); }
+    units.forEach(u => delete u._chunks);
+    saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawTimelines();
+    const nDone = done.filter(Boolean).length;
+    if (e.message === 'CANCELLED' || App.asrCancel) setStatus(`中止しました(${nDone} / ${units.length}か所 完了。②を押すと続きから再開します)`);
     else { console.error(e); setStatus('音声認識でエラーが発生しました:' + e.message); }
-  } finally { const c = $('#au-cancel'); if (c) c.style.display = 'none'; }
+  } finally { App.asrRunning = false; const c = $('#au-cancel'); if (c) c.style.display = 'none'; }
 };
 // 1つのまとまりの認識結果を読みに反映
 function applyASRUnit(m, u, text, chunks) {
