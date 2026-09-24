@@ -119,10 +119,15 @@ kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line-2)
 
 /* 盤面 */
 .board { background: var(--tatami); border-radius: var(--radius); padding: 8px; user-select: none; }
-.board .terr { display: grid; grid-template-columns: repeat(6, 1fr) 10px repeat(6, 1fr); gap: 3px; }
-.board .midline { height: 14px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--text-2); }
-.board .midline::before, .board .midline::after { content: ''; flex: 1; border-top: 1px dashed var(--tatami-line); margin: 0 8px; }
-.board .who { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; margin: 2px 2px 4px; }
+.board .terr-h { display: grid; grid-template-columns: repeat(3, 1fr) 18px repeat(3, 1fr); gap: 3px; max-width: 520px; margin: 0 auto; }
+.board .terr-h .slot { aspect-ratio: 11/6; }
+.board .terr-h .slot.gap { aspect-ratio: auto; height: 6px; }
+.board .terr-h .midcol { border-left: 1px dashed var(--tatami-line); margin-left: 8px; }
+.board .board-head { display: grid; grid-template-columns: 1fr auto 1fr; gap: 8px; align-items: center; margin-bottom: 6px; }
+.board .board-head .who:last-child { justify-content: flex-end; gap: 10px; }
+.board .board-foot { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-2); margin-top: 4px; padding: 0 4px; }
+.board .midline { font-size: 11px; color: var(--text-2); text-align: center; }
+.board .who { display: flex; gap: 10px; font-size: 12px; font-weight: 600; }
 .board .who .cnt { font-variant-numeric: tabular-nums; }
 .slot { aspect-ratio: 5/7; border-radius: 3px; border: 1px dashed transparent; position: relative; min-width: 0; }
 .slot.empty:hover { border-color: var(--tatami-line); background: rgba(255,255,255,.2); }
@@ -369,7 +374,7 @@ const ROW_NAMES = ['上段', '中段', '下段'];
 const slotKey = (side, row, col) => `${side}:${row}:${col}`;
 const parseSlot = k => { const [side, r, c] = k.split(':'); return { side, row: +r, col: +c }; };
 const lrOf = col => (col < 6 ? 'L' : 'R');
-const SIDE_NAME = { N: '手前', F: '奥' };
+const SIDE_NAME = { N: '左', F: '右' }; // 画面で見た位置(横から撮影)
 
 function invertBoard(board) {
   const pos = {};
@@ -1222,6 +1227,19 @@ function estimateOnset(u) {
   return best >= 0.4 ? at : u.s;
 }
 
+// 1つのまとまりに複数の読みが入っている場合(空札で上の句が途中で切られる機械読みなど)、
+// 0.6秒以上の間で句に分け、「下の句→上の句→下の句→上の句…」と交互に並ぶとみなして上の句の開始を返す
+function unitOnsets(u) {
+  if (u.e - u.s < 14) return [estimateOnset(u)];
+  const phrases = [];
+  for (const s of u.subs) {
+    const l = phrases[phrases.length - 1];
+    if (l && s[0] - l[1] < 0.6) l[1] = s[1]; else phrases.push([...s]);
+  }
+  const out = phrases.filter((_, i) => i % 2 === 1).map(p => p[0]);
+  return out.length ? out : [estimateOnset(u)];
+}
+
 // ===== 文字列マッチング =====
 function toHira(s) { return s.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)); }
 function normJa(s) { return toHira(String(s).normalize('NFKC')).replace(/[^ぁ-ゟ一-鿿々]/g, ''); }
@@ -1360,11 +1378,11 @@ function homeHTML() {
       <div class="row">
         <label>日付 <input type="date" id="nm-date" value="${new Date().toISOString().slice(0, 10)}"></label>
         <label>大会・練習名 <input type="text" id="nm-title" placeholder="例:部内練習 / ○○大会 3回戦" style="width:240px"></label>
-        <label><span class="dot n"></span>手前 <select id="nm-n"><option value="">(未登録)</option>${opts}</select></label>
-        <label><span class="dot f"></span>奥 <select id="nm-f"><option value="">(未登録)</option>${opts}</select></label>
+        <label><span class="dot n"></span>左の選手 <select id="nm-n"><option value="">(未登録)</option>${opts}</select></label>
+        <label><span class="dot f"></span>右の選手 <select id="nm-f"><option value="">(未登録)</option>${opts}</select></label>
         <button class="primary" data-act="newMatch">作成</button>
       </div>
-      <div class="muted small" style="margin-top:6px">「手前」は動画で手前(画面下)に座っている選手です。</div>
+      <div class="muted small" style="margin-top:6px">「左」「右」は、横から撮った動画の画面で見た位置です。</div>
     </div>
     <div>
       <div class="row" style="margin-bottom:8px"><h2>試合一覧</h2><span class="muted">${ms.length}試合</span></div>
@@ -1655,8 +1673,8 @@ function renderMatch() {
     <div class="match-head">
       <button data-act="goHome">← 一覧</button>
       <div><div class="muted small">${esc(m.date || '')}</div><b style="font-size:16px;cursor:pointer" data-act="renameMatch" title="クリックで名前を変更">${esc(m.title || '(無題)')}</b></div>
-      <label class="small"><span class="dot n"></span>手前 <select data-act="setPlayer" data-side="N">${opts('N')}</select></label>
-      <label class="small"><span class="dot f"></span>奥 <select data-act="setPlayer" data-side="F">${opts('F')}</select></label>
+      <label class="small"><span class="dot n"></span>左 <select data-act="setPlayer" data-side="N">${opts('N')}</select></label>
+      <label class="small"><span class="dot f"></span>右 <select data-act="setPlayer" data-side="F">${opts('F')}</select></label>
       <span class="spacer"></span>
       <div class="tabs">${[['edit', '編集'], ['sum', '集計'], ['ana', '分析']].map(([k, l]) => `<button data-act="tab" data-tab="${k}" class="${App.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     </div>
@@ -1726,8 +1744,8 @@ function renderEdit(body) {
         <span><kbd>↑</kbd><kbd>↓</kbd></span><span>前 / 次の読みを選ぶ</span>
         <span><kbd>R</kbd></span><span>今の位置に読み(上の句の開始)を追加</span>
         <span><kbd>K</kbd></span><span>選択中の読みの決まり字時刻を今の位置に設定</span>
-        <span><kbd>1</kbd> / <kbd>2</kbd></span><span>手前の選手の 動き出し / 札に到達</span>
-        <span><kbd>9</kbd> / <kbd>0</kbd></span><span>奥の選手の 動き出し / 札に到達</span>
+        <span><kbd>1</kbd> / <kbd>2</kbd></span><span>左の選手の 動き出し / 札に到達</span>
+        <span><kbd>9</kbd> / <kbd>0</kbd></span><span>右の選手の 動き出し / 札に到達</span>
         <span><kbd>Esc</kbd></span><span>札の選択を解除</span>
         <span><kbd>Delete</kbd></span><span>(初期配置で)選択中の札を取り除く</span>
       </div></details>
@@ -1826,25 +1844,25 @@ function drawBoard() {
     if (V.ghost && V.ghost.slot === k) return `<div class="slot"><div class="fuda ghost" data-tip="取られた札">${STD_KIMARI[V.ghost.card]}</div></div>`;
     return `<div class="slot empty ${App.pick != null ? 'target' : ''}" data-slot="${k}"></div>`;
   };
-  const terr = side => {
-    let h = '';
-    const rows = side === 'F' ? [2, 1, 0] : [0, 1, 2];
-    for (const r of rows) {
-      for (let sc = 0; sc < 12; sc++) {
-        if (sc === 6) h += '<div class="slot gap"></div>';
-        const col = side === 'F' ? 11 - sc : sc;
-        h += cell(side, r, col);
-      }
+  // 横から撮影した向き:左の選手の陣が画面左、右の選手の陣が画面右
+  // 左の選手は右を向いて座るので、本人の左手側が画面上。右の選手は逆。
+  const screenCols = [['N', 2], ['N', 1], ['N', 0], null, ['F', 0], ['F', 1], ['F', 2]];
+  let grid = '';
+  for (let sr = 0; sr < 12; sr++) {
+    if (sr === 6) grid += '<div class="slot gap"></div>'.repeat(7);
+    for (const sc of screenCols) {
+      if (!sc) { grid += '<div class="midcol"></div>'; continue; }
+      const [side, row] = sc;
+      const col = side === 'N' ? sr : 11 - sr;
+      grid += cell(side, row, col);
     }
-    return `<div class="terr">${h}</div>`;
-  };
+  }
   const title = V.mode === 'layout' ? '初期配置' : `#${App.sel + 1} の後の盤面`;
+  const who = s => `<div class="who side-${s}" style="color:var(--${s === 'N' ? 'near' : 'far'})"><span><span class="dot ${s.toLowerCase()}"></span>${SIDE_NAME[s]}${m.players?.[s] ? ':' + esc(sideName(m, s)) : 'の選手'}</span><span class="cnt">${cnt[s]}枚</span></div>`;
   $('#board').innerHTML = `<div class="board">
-    <div class="who side-F" style="color:var(--far)"><span><span class="dot f"></span>奥${m.players?.F ? ':' + esc(sideName(m, 'F')) : ''}</span><span class="cnt">${cnt.F}枚</span></div>
-    <div class="side-F">${terr('F')}</div>
-    <div class="midline">${title}${App.pick != null ? ` ・ 「${STD_KIMARI[App.pick]}」を選択中:移動先をクリック` : ''}</div>
-    <div class="side-N">${terr('N')}</div>
-    <div class="who side-N" style="color:var(--near)"><span><span class="dot n"></span>手前${m.players?.N ? ':' + esc(sideName(m, 'N')) : ''}</span><span class="cnt">${cnt.N}枚</span></div>
+    <div class="board-head">${who('N')}<div class="midline">${title}</div>${who('F')}</div>
+    <div class="terr-h">${grid}</div>
+    <div class="board-foot"><span>下段 中段 上段</span><span class="muted">${App.pick != null ? `「${STD_KIMARI[App.pick]}」を選択中:移動先をクリック` : '左右は各選手から見た向き(左の選手は画面上側が左手側)'}</span><span>上段 中段 下段</span></div>
   </div>`;
 }
 function onBoardClick(e) {
@@ -1890,7 +1908,7 @@ function drawEditor() {
   if (App.sel < 0 || !m.reads[App.sel]) {
     const c = countSides(m.layout || {});
     const jo = m.reads.find(r => r.card === 0);
-    el.innerHTML = `<div class="title"><span class="kim">初期配置</span><span class="muted">手前 ${c.N}枚 / 奥 ${c.F}枚(各25枚が基本)</span></div>
+    el.innerHTML = `<div class="title"><span class="kim">初期配置</span><span class="muted">左 ${c.N}枚 / 右 ${c.F}枚(各25枚が基本)</span></div>
       <div class="stack" style="margin-top:10px">
         <div class="small">序歌が読まれている場面で盤面を確認しながら、空いているマスをクリックして札を置きます。置いた札をクリック→別のマスをクリックで移動できます。</div>
         <div class="row">
@@ -2189,7 +2207,7 @@ ACT.detect = async () => {
     let replace = !m.reads.length;
     if (m.reads.length) replace = confirm(`${units.length}か所の読みを検出しました。\n今ある${m.reads.length}件の読みを、検出結果で置き換えますか?\n(キャンセル:区切り情報だけ保存し、読みの一覧はそのまま)`);
     if (replace) {
-      m.reads = m.audio.units.map(u => ({ id: uid(), t: +estimateOnset(u).toFixed(2), unit: [u.s, u.e], card: null, taker: null, fault: {}, ops: [], react: {} }));
+      m.reads = m.audio.units.flatMap(u => unitOnsets(u).map(t => ({ id: uid(), t: +t.toFixed(2), unit: [u.s, u.e], card: null, taker: null, fault: {}, ops: [], react: {} })));
       App.sel = -1;
     }
     saveMatch(m, true); refreshRP();
@@ -2276,53 +2294,67 @@ function applyASRUnit(m, u, text, chunks) {
 
 // ===== カット編集 =====
 function cutPanelHTML(m) {
-  const c = m.cut || (m.cut = { pre: 1.5, post: 2.5, fromShimo: false, jo: true });
+  const c = { pre: 1, post: 2.5, gap: 3, jo: true, ...(m.cut || {}) };
+  m.cut = c;
   const cuts = computeCuts(m);
   const total = cuts.reduce((a, x) => a + x[1] - x[0], 0);
   return `<details class="panel"><summary>カット編集(送り・並べ替えの時間を省く)</summary><div class="body stack">
-    <div class="small">各読みの「上の句の開始」を基準に、前後だけを残します。送りや並べ替えの場面は映像から省かれますが、記録(何を送ったか)は残ります。</div>
+    <div class="small">読み上げの声が入っている場面はすべて残し、声のない時間(送り・並べ替え・暗記時間など)を省きます。${m.audio?.segs ? '' : '<b>先に「音声解析」の①を実行してください。</b>'}省いた場面の記録(何を送ったか等)は残ります。</div>
     <div class="row small">
-      <label>開始の何秒前から <input type="number" step="0.5" min="0" value="${c.pre}" data-act="cutSet" data-k="pre"></label>
-      <label>取った後の余白(秒) <input type="number" step="0.5" min="0" value="${c.post}" data-act="cutSet" data-k="post"></label>
-      <label><input type="checkbox" data-act="cutSet" data-k="fromShimo" ${c.fromShimo ? 'checked' : ''}> 前の下の句から含める</label>
+      <label>声の何秒前から <input type="number" step="0.5" min="0" value="${c.pre}" data-act="cutSet" data-k="pre"></label>
+      <label>声の後に残す秒数 <input type="number" step="0.5" min="0" value="${c.post}" data-act="cutSet" data-k="post"></label>
+      <label>この秒数より短い無音は省かない <input type="number" step="0.5" min="0" value="${c.gap}" data-act="cutSet" data-k="gap"></label>
       <label><input type="checkbox" data-act="cutSet" data-k="jo" ${c.jo ? 'checked' : ''}> 序歌を含める</label>
     </div>
-    <div class="small">${cuts.length ? `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)` : '<span class="muted">読みを登録するとカット区間ができます</span>'}</div>
+    <div class="small" id="cut-info">${cuts.length ? `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)` : '<span class="muted">音声解析①を実行するとカット区間ができます</span>'}</div>
     <div class="row">
       <button data-act="cutPlay">カット再生 ${App.cutMode ? 'を止める' : ''}</button>
       <button class="primary" data-act="cutExport" ${cuts.length ? '' : 'disabled'}>カット動画を書き出す</button>
       <button data-act="cutList" ${cuts.length ? '' : 'disabled'}>区間リスト(ffmpeg用)</button>
     </div>
-    <div class="muted small">MP4・MOVの動画は画質を落とさずに数秒〜数十秒で書き出せます。映像の仕組み上、各区間は指定より少し前の「キーフレーム」から始まります(多くのカメラで1秒以内)。それ以外の形式は再生しながら録画するため、カット後の長さと同じ時間がかかります。</div>
+    <div class="muted small">MP4・MOVの動画は画質を落とさずに数秒〜数十秒で書き出せます。映像の仕組み上、各区間は指定より少し前の「キーフレーム」から始まります(多くのカメラで1秒以内)。それ以外の形式は再生しながら録画するため、カット後の長さと同じ時間がかかります。歓声や物音も「声」として残ることがあります。その場合は解析の感度を下げてください。</div>
   </div></details>`;
 }
 ACT.cutSet = el => {
   const m = curMatch();
   m.cut[el.dataset.k] = el.type === 'checkbox' ? el.checked : Math.max(0, +el.value || 0);
   saveMatch(m); drawTimelines();
+  const cuts = computeCuts(m), total = cuts.reduce((a, x) => a + x[1] - x[0], 0), info = $('#cut-info');
+  if (info) info.innerHTML = `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)`;
 };
 function computeCuts(m) {
-  const c = m.cut || { pre: 1.5, post: 2.5 };
+  const c = { pre: 1, post: 2.5, gap: 3, jo: true, ...(m.cut || {}) };
   const rp = RP || replay(m);
   const segs = [];
+  // 1) 読み上げの声が入っている区間はすべて残す(札の特定に失敗しても読みの場面が抜けない)
+  for (const s of m.audio?.segs || []) if (s[1] - s[0] >= 0.4) segs.push([s[0] - c.pre, s[1] + c.post]);
+  // 2) 手動で追加した読みや、反応の記録がある場面も残す
   m.reads.forEach((r, i) => {
-    if (r.t == null || r.excluded) return;
-    if (r.card === 0 && !c.jo) return;
-    const st = rp.steps[i];
-    let s = r.t - c.pre;
-    if (c.fromShimo && r.unit) s = Math.min(s, r.unit[0] - 0.5);
-    let e = r.t + (r.card === 0 ? 8 : 4);
-    const kt = kimariTime(r, st).t;
+    if (r.t == null) return;
+    let e = r.t + 4;
+    const kt = kimariTime(r, rp.steps[i]).t;
     if (kt != null) e = Math.max(e, kt + 1.5);
     for (const p of ['N', 'F']) { const rc = r.react?.[p]; if (rc?.touch != null) e = Math.max(e, rc.touch); if (rc?.move != null) e = Math.max(e, rc.move + 0.8); }
-    e += c.post;
-    segs.push([Math.max(0, s), e]);
+    segs.push([r.t - c.pre, e + c.post]);
   });
   segs.sort((a, b) => a[0] - b[0]);
-  const out = [];
+  let out = [];
   for (const s of segs) {
+    s[0] = Math.max(0, s[0]);
     const l = out[out.length - 1];
-    if (l && s[0] <= l[1] + 0.3) l[1] = Math.max(l[1], s[1]); else out.push([...s]);
+    if (l && s[0] <= l[1] + c.gap) l[1] = Math.max(l[1], s[1]); else out.push([...s]);
+  }
+  // 3) 除外した読み(序歌を含めない設定も)の場面を取り除く
+  const cutOut = [];
+  m.reads.forEach((r, i) => {
+    if (r.t == null) return;
+    if (r.excluded || (r.card === 0 && !c.jo)) {
+      const next = m.reads.slice(i + 1).find(x => x.t != null);
+      cutOut.push([(r.unit ? Math.min(r.unit[0], r.t) : r.t) - c.pre, next ? next.t - c.pre - 0.1 : r.t + 15]);
+    }
+  });
+  for (const [a, b] of cutOut) {
+    out = out.flatMap(([s, e]) => (e <= a || s >= b) ? [[s, e]] : [[s, a], [b, e]].filter(([x, y]) => y - x > 0.5));
   }
   return out;
 }
@@ -2469,7 +2501,7 @@ function summaryHTML(m) {
       </div>
     </div>
     <div class="card-box"><h3>読みの記録</h3>
-      <div class="scroll" style="max-height:420px;overflow:auto"><table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>決まり字</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th class="num">残り(手前-奥)</th></tr>
+      <div class="scroll" style="max-height:420px;overflow:auto"><table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>決まり字</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th class="num">残り(左-右)</th></tr>
       ${rp.steps.map(st => { const r = st.read; return `<tr><td class="muted">${st.i + 1}</td><td>${fmtT(r.t)}</td>
         <td>${r.card === 0 ? '序歌' : r.card ? esc(POEMS[r.card].kami.split(' ')[0]) : '未確定'}</td><td><b>${st.kimari || ''}</b></td>
         <td>${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣 ' + (lrOf(st.slot.col) === 'L' ? '左' : '右') + ROW_NAMES[st.slot.row] : '空札') : ''}</td>
@@ -2525,10 +2557,10 @@ function analysisHTML(m) {
       ${anyReact ? `<div class="grid2">${reactCard('N')}${reactCard('F')}</div>
         <div style="margin-top:12px">${lineChart(['N', 'F'].map(s => ({ name: sideName(m, s) + ' 動き出し', color: `var(--${s === 'N' ? 'near' : 'far'})`, pts: S[s].react.filter(r => r.move != null).map(r => ({ x: r.i + 1, y: Math.round(r.move * 1000), tip: `#${r.i + 1} ${r.card ? STD_KIMARI[r.card] : ''}(${r.len}字) ${esc(sideName(m, s))} ${fmtMs(r.move)}${r.took ? ' 取り' : ''}${r.est ? ' ※決まり字時刻は推定' : ''}` })) })).map(x => ({ ...x, pts: x.pts })), { yLabel: 'ms', refY: 0, xFmt: v => '#' + v, noLine: true, w: 1000, h: 240 })}</div>
         <div class="muted small">0ms = 決まり字の時刻。マイナスは決まり字より前に動き出したことを表します。決まり字時刻を記録していない読みは「上の句開始+0.2秒×字数」で推定しています。</div>`
-      : '<div class="muted small">編集タブで、動画をコマ送りしながら <kbd>1</kbd>(手前の動き出し)<kbd>2</kbd>(手前の到達)<kbd>9</kbd><kbd>0</kbd>(奥)を押すと記録できます。決まり字の時刻は <kbd>K</kbd> で正確に合わせられます。</div>'}
+      : '<div class="muted small">編集タブで、動画をコマ送りしながら <kbd>1</kbd>(左の選手の動き出し)<kbd>2</kbd>(左の選手の到達)<kbd>9</kbd><kbd>0</kbd>(右の選手)を押すと記録できます。決まり字の時刻は <kbd>K</kbd> で正確に合わせられます。</div>'}
     </div>
     <div class="card-box"><div class="row"><h3 style="margin:0">勝率の推移</h3><span class="spacer"></span><button class="primary" data-act="runWinProb">計算する</button></div>
-      <div id="wp-out" style="margin-top:8px">${cache.wp ? winProbChart(m, cache.wp) : '<div class="muted small">各読みの後の盤面から残りの試合を何百回もシミュレーションし、手前の選手の勝率を出します。将棋の評価値グラフのように、流れが変わった読みがわかります。</div>'}</div>
+      <div id="wp-out" style="margin-top:8px">${cache.wp ? winProbChart(m, cache.wp) : '<div class="muted small">各読みの後の盤面から残りの試合を何百回もシミュレーションし、左の選手の勝率を出します。将棋の評価値グラフのように、流れが変わった読みがわかります。</div>'}</div>
     </div>
     <div class="card-box"><div class="row"><h3 style="margin:0">送り札の評価</h3><span class="spacer"></span><button class="primary" data-act="runSendEval">評価する</button></div>
       <div id="se-out" style="margin-top:8px">${cache.se ? sendEvalHTML(m, cache.se) : '<div class="muted small">送れた札それぞれについて「その札を送った場合の勝率」を計算し、実際に送った札と最善の札を比べます。</div>'}</div>
@@ -2540,7 +2572,7 @@ function analysisHTML(m) {
       ${slider('hand', '利き手側の有利さ', 0, 0.5, 0.05, P.hand, '利き手側(右利きなら右)の札を守りやすい度合い。利き手は選手登録で設定')}
       ${slider('split', '友札が分かれた不利', -1, 0, 0.05, P.split, '友札が相手陣にもある札は守りにくくなる度合い')}
       ${slider('fault', 'お手つき率', 0, 0.1, 0.005, P.fault, '1回の読みでお手つきが起きる確率')}
-      ${slider('skill', '実力差(+で手前が有利)', -1.5, 1.5, 0.05, P.skill, '初期値は過去の試合記録から推定。記録がなければ0')}
+      ${slider('skill', '実力差(+で左の選手が有利)', -1.5, 1.5, 0.05, P.skill, '初期値は過去の試合記録から推定。記録がなければ0')}
       ${slider('sims', '試行回数', 100, 2000, 100, P.sims, '多いほど正確ですが時間がかかります')}
       <div><button class="small" data-act="simReset">初期設定に戻す</button></div>
     </div></details>
@@ -2578,7 +2610,7 @@ function winProbChart(m, wp) {
   return `${lineChart([{ name: sideName(m, 'N') + ' の勝率', color: 'var(--near)', pts: wp.map((x, k) => ({ x: k, y: Math.round(x.p * 100), tip: `${x.i < 0 ? '開始時' : '#' + (x.i + 1) + ' ' + (x.card === 0 ? '序歌' : x.card ? STD_KIMARI[x.card] : '')} ${esc(sideName(m, 'N'))}の勝率 ${Math.round(x.p * 100)}%` })) }],
     { ymin: 0, ymax: 100, yTicks: [0, 25, 50, 75, 100], yFmt: v => v + '%', refY: 50, xFmt: v => v ? '#' + v : '開始', dots: false, w: 1000, h: 240 })}
     <div class="small" style="margin-top:6px">流れが大きく動いた読み:${swings.map(x => `<span class="chip" style="margin-right:4px">#${x.i + 1} ${x.card === 0 ? '序歌' : STD_KIMARI[x.card] || ''} ${x.d > 0 ? '▲' : '▼'}${Math.abs(Math.round(x.d * 100))}pt</span>`).join('')}</div>
-    <div class="muted small">縦軸は ${esc(sideName(m, 'N'))}(手前)の勝率。${esc(sideName(m, 'F'))}の勝率は 100% からこの値を引いたものです。</div>`;
+    <div class="muted small">縦軸は ${esc(sideName(m, 'N'))}(左)の勝率。${esc(sideName(m, 'F'))}の勝率は 100% からこの値を引いたものです。</div>`;
 }
 
 ACT.runSendEval = async el => {
@@ -2644,7 +2676,7 @@ function sendEvalHTML(m, res) {
   $('#btn-export').addEventListener('click', ACT.exportAll);
   $('#btn-import').addEventListener('change', e => { const f = e.target.files[0]; if (f) importFile(f); e.target.value = ''; });
   window.addEventListener('beforeunload', () => { const m = curMatch(); if (m) DB.put('matches', m); });
-  window.KarutaApp = { App, DB, replay, matchStats, POEMS, STD_KIMARI };
+  window.KarutaApp = { App, DB, replay, matchStats, POEMS, STD_KIMARI, computeCuts };
   render();
 })();
 </script>
