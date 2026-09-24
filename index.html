@@ -194,11 +194,20 @@ svg.chart .axis { stroke: var(--line-2); }
 .bar-bg > div { height: 100%; border-radius: 4px; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 6px; z-index: 70; font-size: 13px; }
 
+/* 配置の読み取り */
+.vis-bg { padding-top: 2vh; }
+.vis-modal { width: min(1460px, 97vw); max-height: 95vh; }
+.vis-wrap { margin-top: 8px; text-align: center; }
+.vis-cv { max-width: 100%; border-radius: 6px; touch-action: none; }
+.vis-status { margin-top: 8px; min-height: 1.4em; }
+.vis-bar { display: inline-block; width: 160px; height: 6px; background: var(--surface-2); border-radius: 3px; vertical-align: middle; overflow: hidden; }
+.vis-bar i { display: block; height: 100%; background: var(--accent); }
+
 </style>
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25f</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25g</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -514,14 +523,16 @@ const DB = {
   async open() {
     if (this.db) return this.db;
     this.db = await new Promise((res, rej) => {
-      const q = indexedDB.open('karuta-video-app', 1);
+      const q = indexedDB.open('karuta-video-app', 2);
       q.onupgradeneeded = () => {
         const d = q.result;
-        d.createObjectStore('players', { keyPath: 'id' });
-        d.createObjectStore('matches', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('players')) d.createObjectStore('players', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('matches')) d.createObjectStore('matches', { keyPath: 'id' });
+        if (!d.objectStoreNames.contains('cardimg')) d.createObjectStore('cardimg', { keyPath: 'no' }); // 札の見本画像(配置の読み取り用)
       };
       q.onsuccess = () => res(q.result);
       q.onerror = () => rej(q.error);
+      q.onblocked = () => alert('このアプリが別のタブでも開かれています。ほかのタブを閉じてから再読み込みしてください。');
     });
     return this.db;
   },
@@ -1786,6 +1797,533 @@ async function rejudgeReads(m, onStatus) {
   return { assigned, removed, noise, split, moved, total: keep.length };
 }
 
+// ===== 画像から初期配置を読み取る =====
+// 1) 白くて彩度の低い四角(取り札)を探す  2) 中央線・上下の境目から、どの選手の何段目の何列目かを決める
+// 3) 札ごとに、過去に確定した札の画像(見本)と見比べる + 文字認識(Tesseract)で下の句を読む
+// 4) 同じ札は1枚だけになるように割り当てる。自信のない札は黄色・赤で示し、クリックで手直しできる
+const VIS = { tess: null, tessReady: null, tmpl: null };
+const TW = 30, TH = 42; // 見本画像の大きさ(札を縦向きにしたもの)
+
+// --- 札の検出(ImageData → 札の四角の一覧)
+function visDetect(img) {
+  const { width: W, height: H, data: d } = img;
+  const N = W * H, V = new Uint8Array(N), S = new Uint8Array(N);
+  const hist = new Uint32Array(256);
+  for (let i = 0, p = 0; i < N; i++, p += 4) {
+    const r = d[p], g = d[p + 1], b = d[p + 2];
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    V[i] = mx; S[i] = mx ? ((mx - mn) * 255 / mx) | 0 : 0; hist[mx]++;
+  }
+  let acc = 0, p90 = 255;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= N * 0.9) { p90 = v; break; } }
+  const thrV = Math.max(140, p90 - 50);
+  let M = new Uint8Array(N);
+  for (let i = 0; i < N; i++) M[i] = V[i] > thrV && S[i] < 50 ? 1 : 0;
+  // 小さな点を消す(3x3の収縮→膨張)
+  const morph = (src, erode) => {
+    const t = new Uint8Array(N), o = new Uint8Array(N);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x, a = x > 0 ? src[i - 1] : src[i], b = src[i], c = x < W - 1 ? src[i + 1] : src[i];
+      t[i] = erode ? a & b & c : a | b | c;
+    }
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x, a = y > 0 ? t[i - W] : t[i], b = t[i], c = y < H - 1 ? t[i + W] : t[i];
+      o[i] = erode ? a & b & c : a | b | c;
+    }
+    return o;
+  };
+  M = morph(morph(M, true), false);
+  // つながった領域
+  const lab = new Int32Array(N), stack = new Int32Array(N);
+  const comps = [];
+  let id = 0;
+  for (let s = 0; s < N; s++) {
+    if (!M[s] || lab[s]) continue;
+    id++;
+    let sp = 0, x0 = W, y0 = H, x1 = 0, y1 = 0, area = 0;
+    stack[sp++] = s; lab[s] = id;
+    while (sp) {
+      const i = stack[--sp], x = i % W, y = (i / W) | 0;
+      area++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      if (x > 0 && M[i - 1] && !lab[i - 1]) { lab[i - 1] = id; stack[sp++] = i - 1; }
+      if (x < W - 1 && M[i + 1] && !lab[i + 1]) { lab[i + 1] = id; stack[sp++] = i + 1; }
+      if (y > 0 && M[i - W] && !lab[i - W]) { lab[i - W] = id; stack[sp++] = i - W; }
+      if (y < H - 1 && M[i + W] && !lab[i + W]) { lab[i + W] = id; stack[sp++] = i + W; }
+    }
+    comps.push({ id, x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1, area });
+  }
+  const minArea = N * 0.00015, minLen = Math.max(5, Math.round(Math.max(W, H) / 350));
+  let boxes = [];
+  for (const c of comps) {
+    if (c.area < minArea || c.area / (c.w * c.h) < 0.45) continue;
+    // 並んで接している札を、白の割合が下がるところで分ける
+    const prof = (axis) => {
+      const L = axis ? c.h : c.w, out = new Float32Array(L);
+      for (let k = 0; k < L; k++) {
+        let n = 0;
+        const len = axis ? c.w : c.h;
+        for (let j = 0; j < len; j++) {
+          const x = axis ? c.x + j : c.x + k, y = axis ? c.y + k : c.y + j;
+          if (lab[y * W + x] === c.id) n++;
+        }
+        out[k] = n / len;
+      }
+      return out;
+    };
+    const segs = pr => {
+      const out = []; let s = -1;
+      for (let k = 0; k <= pr.length; k++) {
+        const on = k < pr.length && pr[k] >= 0.55;
+        if (on && s < 0) s = k;
+        if (!on && s >= 0) { if (k - s >= minLen) out.push([s, k]); s = -1; }
+      }
+      return out;
+    };
+    const rows = segs(prof(1)), cols = segs(prof(0));
+    for (const [a0, a1] of rows) for (const [b0, b1] of cols) boxes.push({ x: c.x + b0, y: c.y + a0, w: b1 - b0, h: a1 - a0 });
+  }
+  // 大きさが札らしいものだけ(中央値の0.35〜2.8倍)
+  if (boxes.length) {
+    const areas = boxes.map(b => b.w * b.h).sort((a, b) => a - b), med = areas[areas.length >> 1];
+    boxes = boxes.filter(b => b.w * b.h > med * 0.35 && b.w * b.h < med * 2.8);
+  }
+  return boxes;
+}
+
+// 一番広いすき間(両側に札が2割以上ある所)
+function visGap(boxes, axis) {
+  if (boxes.length < 4) return null;
+  const iv = boxes.map(b => axis ? [b.y, b.y + b.h] : [b.x, b.x + b.w]).sort((a, b) => a[0] - b[0]);
+  let best = null, reach = iv[0][1];
+  for (let i = 1; i < iv.length; i++) {
+    const gap = iv[i][0] - reach;
+    const before = i, after = iv.length - i;
+    if (gap > 0 && before >= iv.length * 0.2 && after >= iv.length * 0.2 && (!best || gap > best.gap)) best = { gap, at: (reach + iv[i][0]) / 2 };
+    reach = Math.max(reach, iv[i][1]);
+  }
+  return best ? best.at : null;
+}
+
+// --- 四角 → 盤面のマス(横から撮った向き:左の選手が画面左、その左手側が画面上)
+function visAssignSlots(boxes, seamX, midY) {
+  const taken = new Set();
+  for (const side of ['N', 'F']) {
+    const cs = boxes.filter(b => !b.off && (side === 'N' ? b.x + b.w / 2 < seamX : b.x + b.w / 2 >= seamX));
+    if (!cs.length) continue;
+    const dist = b => side === 'N' ? seamX - (b.x + b.w) : b.x - seamX; // 中央線からの距離
+    // 段:上半分・下半分それぞれで、中央線からの距離でまとめる(遠近で札の大きさが違うため別々に)
+    for (const top of [true, false]) {
+      const sorted = cs.filter(b => (b.y + b.h / 2 < midY) === top).sort((a, b) => dist(a) - dist(b));
+      const clusters = [];
+      for (const b of sorted) {
+        const l = clusters[clusters.length - 1];
+        if (l && dist(b) - l.d < 0.5 * b.w) l.items.push(b); else clusters.push({ d: dist(b), items: [b] });
+      }
+      let row = -1, prevD = null;
+      for (const cl of clusters) {
+        const w = cl.items.reduce((s, b) => s + b.w, 0) / cl.items.length;
+        if (prevD == null) row = cl.d > 0.8 * w ? 1 : 0;
+        else row += Math.max(1, Math.round((cl.d - prevD) / (w * 1.08)));
+        row = Math.min(2, row); prevD = cl.d;
+        cl.items.forEach(b => { b.side = side; b.row = row; });
+      }
+    }
+    // 列:上半分は画面上端から、下半分は画面下端から数える
+    for (const top of [true, false]) {
+      const hs = cs.filter(b => (b.y + b.h / 2 < midY) === top);
+      if (!hs.length) continue;
+      const edge = top ? Math.min(...hs.map(b => b.y)) : Math.max(...hs.map(b => b.y + b.h));
+      for (let r = 0; r < 3; r++) {
+        const rs = hs.filter(b => b.row === r).sort((a, b) => top ? a.y - b.y : (b.y + b.h) - (a.y + a.h));
+        // 端からの位置:最初の札は端からの距離で、次からは前の札とのすき間で数える(札どうしが接していれば隣の列)
+        let prev = -1, prevEnd = null;
+        for (const b of rs) {
+          const pitch = b.h * 1.1;
+          const near = top ? b.y : b.y + b.h, far = top ? b.y + b.h : b.y;
+          const gap = prevEnd == null ? Math.abs(near - edge) : Math.max(0, top ? near - prevEnd : prevEnd - near);
+          const idx = prevEnd == null ? Math.round(gap / pitch) : prev + 1 + (gap < 0.5 * b.h ? 0 : Math.round(gap / pitch));
+          prev = idx; prevEnd = far;
+          b.sr = top ? Math.min(11, idx) : Math.max(0, 11 - idx);
+        }
+      }
+    }
+    // 重なりは近くの空きマスへ
+    for (const b of cs) {
+      let sr = b.sr ?? 0;
+      const key = s => slotKey(side, b.row, side === 'N' ? s : 11 - s);
+      if (taken.has(key(sr))) {
+        for (let d = 1; d < 12; d++) {
+          if (sr + d < 12 && !taken.has(key(sr + d))) { sr += d; break; }
+          if (sr - d >= 0 && !taken.has(key(sr - d))) { sr -= d; break; }
+        }
+      }
+      b.sr = sr; b.slot = key(sr); taken.add(b.slot);
+    }
+  }
+}
+
+// --- 札の切り出し(縦向き・札の縦横比にそろえる)
+function visCrop(src, b, outH) {
+  const outW = Math.round(outH * 52 / 73);
+  const ix = b.w * 0.05, iy = b.h * 0.05; // 縁の緑を少し除く
+  const c = document.createElement('canvas');
+  c.width = outW; c.height = outH;
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.translate(outW / 2, outH / 2);
+  // 左の選手の札は画面右が札の上 → 反時計回り、右の選手の札は時計回り
+  g.rotate(b.side === 'F' ? Math.PI / 2 : -Math.PI / 2);
+  g.drawImage(src, b.x + ix, b.y + iy, b.w - 2 * ix, b.h - 2 * iy, -outH / 2, -outW / 2, outH, outW);
+  return c;
+}
+// 文字認識用:余白をつけ、濃淡をはっきりさせる(variant 1)/ 少し内側を切り出すだけ(variant 2)
+function visCropOCR(src, b, variant) {
+  if (variant === 2) return visCrop(src, b, 300);
+  const outH = 300, outW = Math.round(outH * 52 / 73), P = Math.round(outH * 0.08);
+  const c = document.createElement('canvas');
+  c.width = outW + 2 * P; c.height = outH + 2 * P;
+  const g = c.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+  g.imageSmoothingQuality = 'high';
+  g.translate(c.width / 2, c.height / 2);
+  g.rotate(b.side === 'F' ? Math.PI / 2 : -Math.PI / 2);
+  g.drawImage(src, b.x, b.y, b.w, b.h, -outH / 2, -outW / 2, outH, outW);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  const im = g.getImageData(0, 0, c.width, c.height), d = im.data, n = d.length / 4;
+  const gs = new Float32Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) gs[i] = 0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2];
+  const srt = Float32Array.from(gs).sort(), lo = srt[Math.floor(n * 0.02)], hi = srt[Math.floor(n * 0.6)];
+  for (let i = 0, p = 0; i < n; i++, p += 4) { const v = clamp((gs[i] - lo) / ((hi - lo) || 1) * 255, 0, 255); d[p] = d[p + 1] = d[p + 2] = v; }
+  g.putImageData(im, 0, 0);
+  return c;
+}
+function visGray(c) {
+  const g = c.getContext('2d'), im = g.getImageData(0, 0, c.width, c.height), d = im.data;
+  const out = new Float32Array(c.width * c.height);
+  for (let i = 0, p = 0; i < out.length; i++, p += 4) out[i] = 0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2];
+  return out;
+}
+// 見本との比較用(ぼかして平均0・長さ1にする)
+function visVec(px, w = TW, h = TH) {
+  const b = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let s = 0, n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const X = x + dx, Y = y + dy;
+      if (X >= 0 && X < w && Y >= 0 && Y < h) { s += px[Y * w + X]; n++; }
+    }
+    b[y * w + x] = s / n;
+  }
+  // 端の2ピクセルは使わない
+  const v = []; for (let y = 2; y < h - 2; y++) for (let x = 2; x < w - 2; x++) v.push(b[y * w + x]);
+  const m = v.reduce((a, c) => a + c, 0) / v.length;
+  let nn = 0; for (let i = 0; i < v.length; i++) { v[i] -= m; nn += v[i] * v[i]; }
+  nn = Math.sqrt(nn) || 1;
+  return Float32Array.from(v, x => x / nn);
+}
+const visDot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+
+// --- 見本(過去に確定した札の画像)
+async function visLoadTemplates() {
+  if (VIS.tmpl) return VIS.tmpl;
+  let rows = [];
+  try { rows = await DB.all('cardimg'); } catch (e) { console.warn(e); }
+  VIS.tmpl = new Map(rows.map(r => [r.no, r.imgs.map(px => visVec(px))]));
+  VIS.tmplRaw = new Map(rows.map(r => [r.no, r]));
+  return VIS.tmpl;
+}
+async function visSaveTemplates(list) {
+  await visLoadTemplates();
+  for (const { no, px } of list) {
+    const r = VIS.tmplRaw.get(no) || { no, imgs: [] };
+    r.imgs = [...r.imgs, Array.from(px, v => Math.round(v))].slice(-4);
+    VIS.tmplRaw.set(no, r);
+    VIS.tmpl.set(no, r.imgs.map(p => visVec(p)));
+    try { await DB.put('cardimg', r); } catch (e) { console.warn(e); }
+  }
+}
+
+// --- 文字認識(Tesseract、縦書き日本語)
+function visLoadTess(onStatus) {
+  if (VIS.tessReady) return VIS.tessReady;
+  VIS.tessReady = (async () => {
+    if (!window.Tesseract) {
+      onStatus?.('文字認識の準備をしています…(初回は数MBの読み込み)');
+      await new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+        s.onload = res; s.onerror = () => rej(new Error('文字認識の部品を読み込めませんでした'));
+        document.head.appendChild(s);
+      });
+    }
+    const w = await Tesseract.createWorker('jpn_vert');
+    await w.setParameters({ tessedit_pageseg_mode: '5' }); // 縦書きのひとかたまり
+    VIS.tess = w;
+    return w;
+  })();
+  VIS.tessReady.catch(() => { VIS.tessReady = null; });
+  return VIS.tessReady;
+}
+const VIS_SHIMO = () => VIS.shimo || (VIS.shimo = ALL_CARDS.map(no => [no, phNorm(POEMS[no].shimoKana.replace(/\s/g, ''))]));
+function visOcrScores(text) {
+  const q = phNorm(String(text || '').replace(/[^ぁ-ゖァ-ヶー]/g, ''));
+  if (q.length < 3) return new Map();
+  return new Map(VIS_SHIMO().map(([no, y]) => [no, phAlign(q, y) / (2 * y.length)]));
+}
+
+// --- まとめて読み取る
+async function visRecognize(src, boxes, onProg, cancelled) {
+  const tm = await visLoadTemplates();
+  const live = boxes.filter(b => !b.off);
+  let k = 0;
+  for (const b of live) {
+    if (cancelled()) return false;
+    const small = visCrop(src, b, TH);
+    b.px = visGray(small);
+    const v = visVec(b.px);
+    b.tscore = new Map();
+    tm.forEach((vs, no) => b.tscore.set(no, Math.max(...vs.map(t => visDot(v, t)))));
+    const tb = [...b.tscore.entries()].sort((a, c) => c[1] - a[1]);
+    const sure = tb[0] && tb[0][1] > 0.8 && (!tb[1] || tb[0][1] - tb[1][1] > 0.12);
+    b.oscore = new Map();
+    if (!sure) {
+      const w = await visLoadTess(t => onProg(t));
+      if (cancelled()) return false;
+      // 2通りの切り出し方で読み、良いほうの点を使う(1回目で十分なら2回目は省く)
+      b.ocr = [];
+      for (const variant of [1, 2]) {
+        const r = await w.recognize(visCropOCR(src, b, variant));
+        b.ocr.push(r.data.text);
+        visOcrScores(r.data.text).forEach((v, no) => b.oscore.set(no, Math.max(b.oscore.get(no) || 0, v)));
+        const best = Math.max(0, ...b.oscore.values());
+        if (best >= 0.4 || cancelled()) break;
+      }
+    }
+    onProg(`札を読み取っています… ${++k} / ${live.length}`, k / live.length);
+  }
+  visSolve(boxes);
+  return true;
+}
+// 見本・文字認識の点を合わせて、同じ札が重ならないように割り当てる
+function visSolve(boxes) {
+  const live = boxes.filter(b => !b.off && b.tscore);
+  const all = [];
+  for (const b of live) {
+    const sc = new Map();
+    for (const no of ALL_CARDS) {
+      const o = b.oscore?.get(no) ?? 0, t = b.tscore?.get(no) ?? 0;
+      const oP = clamp((o - 0.12) / 0.33, 0, 1), tP = clamp((t - 0.5) / 0.35, 0, 1);
+      const s = Math.max(oP, tP) + 0.2 * Math.min(oP, tP);
+      if (s > 0.05) sc.set(no, +s.toFixed(3));
+    }
+    b.cands = [...sc.entries()].sort((a, c) => c[1] - a[1]).slice(0, 5);
+    if (b.manual) continue;
+    b.cands.forEach(([no, s]) => all.push([s, b, no]));
+    b.no = null; b.conf = 'none';
+  }
+  const used = new Set(live.filter(b => b.manual && b.no != null).map(b => b.no));
+  all.sort((a, c) => c[0] - a[0]);
+  for (const [s, b, no] of all) {
+    if (b.no != null || used.has(no) || s < 0.3) continue;
+    b.no = no; used.add(no);
+    const second = b.cands.find(([n]) => n !== no)?.[1] ?? 0;
+    b.conf = s >= 0.6 && s - second >= 0.2 ? 'ok' : 'unsure';
+  }
+}
+
+// ===== 画面 =====
+async function openVision(mode) {
+  const m = curMatch();
+  let src = document.createElement('canvas');
+  if (mode === 'video') {
+    const v = vid();
+    if (!v || !v.videoWidth) { alert('動画が読み込まれていません。'); return; }
+    v.pause();
+    src.width = v.videoWidth; src.height = v.videoHeight;
+    src.getContext('2d').drawImage(v, 0, 0);
+  } else {
+    const file = await new Promise(res => {
+      const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*';
+      i.onchange = () => res(i.files[0]); i.click();
+    });
+    if (!file) return;
+    let bmp;
+    try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+    catch (e) { alert('この画像は読み込めませんでした。iPhoneの写真(HEIC)の場合は、JPEGで書き出すか、「設定→カメラ→フォーマット→互換性優先」で撮影してください。'); return; }
+    const sc = Math.min(1, 3200 / Math.max(bmp.width, bmp.height));
+    src.width = Math.round(bmp.width * sc); src.height = Math.round(bmp.height * sc);
+    src.getContext('2d').drawImage(bmp, 0, 0, src.width, src.height);
+  }
+  const S = { src, boxes: [], seamX: 0, midY: 0, stage: 'detect', busy: false, cancel: false };
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg vis-bg';
+  bg.innerHTML = `<div class="modal vis-modal">
+    <div class="mh"><b>${mode === 'video' ? '動画から配置を読み取る' : '写真から配置を読み取る'}</b><span class="spacer"></span>
+      ${mode === 'photo' ? '<button data-v="rot">90°回転</button>' : ''}
+      <button data-v="redetect">札を探し直す</button>
+      <button data-v="run" class="primary">読み取り開始</button>
+      <button data-v="apply" class="primary" disabled>配置に反映</button>
+      <button data-v="close">閉じる</button></div>
+    <div class="mb">
+      <div class="vis-help small muted"></div>
+      <div class="vis-wrap"><canvas class="vis-cv"></canvas></div>
+      <div class="vis-status small"></div>
+    </div></div>`;
+  document.body.appendChild(bg);
+  const cv = bg.querySelector('.vis-cv'), g = cv.getContext('2d');
+  const help = bg.querySelector('.vis-help'), status = bg.querySelector('.vis-status');
+  const btn = v => bg.querySelector(`button[data-v="${v}"]`);
+  let scale = 1;
+  const vstat = (t, p) => { status.innerHTML = esc(t) + (p != null ? ` <span class="vis-bar"><i style="width:${Math.round(p * 100)}%"></i></span>` : ''); };
+  const detect = () => {
+    const sc = Math.min(1, 1600 / Math.max(src.width, src.height));
+    const t = document.createElement('canvas');
+    t.width = Math.round(src.width * sc); t.height = Math.round(src.height * sc);
+    t.getContext('2d').drawImage(src, 0, 0, t.width, t.height);
+    const bx = visDetect(t.getContext('2d').getImageData(0, 0, t.width, t.height));
+    S.boxes = bx.map(b => ({ x: b.x / sc, y: b.y / sc, w: b.w / sc, h: b.h / sc }));
+    S.seamX = visGap(S.boxes, 0) ?? src.width / 2;
+    S.midY = visGap(S.boxes, 1) ?? src.height / 2;
+    S.stage = 'detect';
+    visAssignSlots(S.boxes, S.seamX, S.midY);
+    btn('apply').disabled = true;
+    const c = countSides(Object.fromEntries(S.boxes.filter(b => b.slot).map(b => [b.slot, 1])));
+    vstat(`札を${S.boxes.length}枚見つけました(左 ${c.N}枚・右 ${c.F}枚)。`);
+    draw();
+  };
+  const fit = () => {
+    const maxW = Math.min(window.innerWidth * 0.94 - 40, 1400), maxH = window.innerHeight * 0.66;
+    scale = Math.min(maxW / src.width, maxH / src.height);
+    cv.width = Math.round(src.width * scale); cv.height = Math.round(src.height * scale);
+  };
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const draw = () => {
+    fit();
+    g.drawImage(src, 0, 0, cv.width, cv.height);
+    help.innerHTML = S.stage === 'detect'
+      ? (mode === 'photo' ? '<b>左の選手が画面の左、右の選手が画面の右</b>になるように「90°回転」で向きを合わせてください。' : '') + '青=左の選手・橙=右の選手の札。<b>枠をクリック</b>で除外/戻す、<b>何もない所をドラッグ</b>で札の枠を追加、<b>点線</b>(中央線・上下の境目)はドラッグで動かせます。よければ「読み取り開始」(1枚1〜2秒かかります)。'
+      : '<b style="color:var(--good)">緑</b>=自信あり <b style="color:var(--warn)">黄</b>=要確認 <b style="color:var(--bad)">赤</b>=読めず。<b>枠をクリック</b>で札を選び直せます。直し終わったら「配置に反映」。';
+    g.save(); g.setLineDash([6, 5]); g.lineWidth = 2; g.strokeStyle = 'rgba(255,255,255,.9)';
+    g.beginPath(); g.moveTo(S.seamX * scale, 0); g.lineTo(S.seamX * scale, cv.height); g.stroke();
+    g.beginPath(); g.moveTo(0, S.midY * scale); g.lineTo(cv.width, S.midY * scale); g.stroke();
+    g.restore();
+    for (const b of S.boxes) {
+      const x = b.x * scale, y = b.y * scale, w = b.w * scale, h = b.h * scale;
+      g.lineWidth = 2;
+      if (b.off) { g.strokeStyle = 'rgba(120,120,120,.9)'; g.setLineDash([3, 3]); g.strokeRect(x, y, w, h); g.setLineDash([]); continue; }
+      g.strokeStyle = b.side === 'F' ? css('--far') : css('--near');
+      g.strokeRect(x, y, w, h);
+      if (S.stage === 'result') {
+        const col = b.conf === 'ok' ? '31,138,76' : b.conf === 'unsure' ? '184,134,11' : '192,57,43';
+        g.fillStyle = `rgba(${col},${b.manual ? 0.35 : 0.55})`; g.fillRect(x, y, w, h);
+        g.fillStyle = '#fff'; g.font = `bold ${Math.max(10, Math.min(16, h * 0.5))}px sans-serif`;
+        g.textAlign = 'center'; g.textBaseline = 'middle';
+        g.fillText(b.no != null ? STD_KIMARI[b.no] : '?', x + w / 2, y + h / 2);
+      }
+    }
+  };
+  // --- 操作
+  let drag = null;
+  const pos = e => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / scale, y: (e.clientY - r.top) / scale }; };
+  const hit = p => S.boxes.find(b => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
+  cv.addEventListener('pointerdown', e => {
+    if (S.busy) return;
+    const p = pos(e), tol = 7 / scale;
+    if (Math.abs(p.x - S.seamX) < tol) drag = { kind: 'seam' };
+    else if (Math.abs(p.y - S.midY) < tol) drag = { kind: 'mid' };
+    else drag = { kind: 'new', p0: p, p };
+    cv.setPointerCapture(e.pointerId);
+  });
+  cv.addEventListener('pointermove', e => {
+    const p = pos(e);
+    if (!drag) { const tol = 7 / scale; cv.style.cursor = Math.abs(p.x - S.seamX) < tol ? 'ew-resize' : Math.abs(p.y - S.midY) < tol ? 'ns-resize' : hit(p) ? 'pointer' : 'crosshair'; return; }
+    if (drag.kind === 'seam') S.seamX = p.x;
+    else if (drag.kind === 'mid') S.midY = p.y;
+    else drag.p = p;
+    draw();
+    if (drag.kind === 'new') { const a = drag.p0; g.strokeStyle = '#fff'; g.setLineDash([4, 3]); g.strokeRect(Math.min(a.x, p.x) * scale, Math.min(a.y, p.y) * scale, Math.abs(p.x - a.x) * scale, Math.abs(p.y - a.y) * scale); g.setLineDash([]); }
+  });
+  cv.addEventListener('pointerup', e => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (d.kind === 'seam' || d.kind === 'mid') { visAssignSlots(S.boxes, S.seamX, S.midY); draw(); return; }
+    const p = pos(e), a = d.p0;
+    const moved = Math.hypot((p.x - a.x) * scale, (p.y - a.y) * scale) > 8;
+    if (moved) {
+      S.boxes.push({ x: Math.min(a.x, p.x), y: Math.min(a.y, p.y), w: Math.abs(p.x - a.x), h: Math.abs(p.y - a.y), added: true });
+      visAssignSlots(S.boxes, S.seamX, S.midY);
+      if (S.stage === 'result') { const b = S.boxes[S.boxes.length - 1]; b.tscore = new Map(); b.oscore = new Map(); b.no = null; b.conf = 'none'; b.cands = []; }
+      draw(); return;
+    }
+    const b = hit(p);
+    if (!b) return;
+    if (S.stage === 'detect') { b.off = !b.off; visAssignSlots(S.boxes, S.seamX, S.midY); draw(); return; }
+    if (b.off) { b.off = false; visAssignSlots(S.boxes, S.seamX, S.midY); draw(); return; }
+    const used = new Set(S.boxes.filter(x => x !== b && !x.off && x.no != null).map(x => x.no));
+    openPicker({
+      title: `${SIDE_NAME[b.side]}の選手 ${ROW_NAMES[b.row]} の札`, used, cands: b.cands || [], candLabel: '読み取りの候補', allowNone: true, noneLabel: 'この枠を除外',
+      onPick: c => {
+        if (c == null) { b.off = true; b.no = null; }
+        else {
+          const other = S.boxes.find(x => x !== b && x.no === c);
+          if (other) { other.no = null; other.conf = 'none'; other.manual = false; }
+          b.no = c; b.manual = true; b.conf = 'ok';
+        }
+        visAssignSlots(S.boxes, S.seamX, S.midY); draw(); summary();
+      }
+    });
+  });
+  const summary = () => {
+    const live = S.boxes.filter(b => !b.off);
+    const ok = live.filter(b => b.no != null && b.conf === 'ok').length, un = live.filter(b => b.no != null && b.conf === 'unsure').length, no = live.filter(b => b.no == null).length;
+    vstat(`${live.length}枚:自信あり ${ok}枚・要確認 ${un}枚・読めず ${no}枚。黄と赤の枠をクリックして直してください。`);
+  };
+  bg.addEventListener('click', async e => {
+    const b = e.target.closest('button[data-v]');
+    if (!b || b.disabled) return;
+    const v = b.dataset.v;
+    if (v === 'close') { if (S.busy) { S.cancel = true; return; } bg.remove(); return; }
+    if (S.busy) return;
+    if (v === 'rot') {
+      const r = document.createElement('canvas'); r.width = src.height; r.height = src.width;
+      const rg = r.getContext('2d'); rg.translate(r.width, 0); rg.rotate(Math.PI / 2); rg.drawImage(src, 0, 0);
+      src = S.src = r; detect(); return;
+    }
+    if (v === 'redetect') { detect(); return; }
+    if (v === 'run') {
+      if (!S.boxes.some(x => !x.off)) return;
+      S.busy = true; S.cancel = false; btn('close').textContent = '中止';
+      $$('button', bg).forEach(x => { if (x.dataset.v !== 'close') x.disabled = true; });
+      try {
+        const done = await visRecognize(src, S.boxes, (t, p) => vstat(t, p), () => S.cancel);
+        if (done) { S.stage = 'result'; draw(); summary(); btn('apply').disabled = false; }
+        else vstat('中止しました。');
+      } catch (err) { console.error(err); vstat('読み取りに失敗しました:' + err.message); }
+      finally {
+        S.busy = false; btn('close').textContent = '閉じる';
+        $$('button', bg).forEach(x => { if (x.dataset.v !== 'apply') x.disabled = false; });
+        if (S.stage === 'result') btn('apply').disabled = false;
+      }
+      return;
+    }
+    if (v === 'apply') {
+      const live = S.boxes.filter(x => !x.off && x.no != null && x.slot);
+      if (Object.keys(m.layout || {}).length && !confirm('今の初期配置を、読み取った配置で置き換えますか?')) return;
+      m.layout = {};
+      live.forEach(x => { m.layout[x.slot] = x.no; });
+      saveMatch(m, true); refreshRP(); drawBoard(); drawEditor(); drawReads();
+      // 次回のための見本として保存(自信あり・手で選んだ札)
+      const learn = live.filter(x => x.px && (x.manual || x.conf === 'ok')).map(x => ({ no: x.no, px: x.px }));
+      visSaveTemplates(learn);
+      const miss = S.boxes.filter(x => !x.off && x.no == null).length;
+      bg.remove();
+      setStatus(`配置に${live.length}枚を反映しました${miss ? `(読めなかった${miss}枚は盤面で入力してください)` : ''}。`);
+    }
+  });
+  window.addEventListener('resize', draw, { once: true });
+  detect();
+}
+
 // ===== アプリ状態 =====
 const App = {
   players: [], matches: [],
@@ -2070,15 +2608,15 @@ function niceTicks(a, b, n) {
 }
 
 // ===== 札を選ぶダイアログ =====
-function openPicker({ title, used = new Set(), cands = [], allowJo = false, allowNone = false, onPick }) {
+function openPicker({ title, used = new Set(), cands = [], allowJo = false, allowNone = false, candLabel = '音声認識の候補', noneLabel = '未確定にする', onPick }) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';
   const candSet = new Set(cands.map(c => c[0]));
   bg.innerHTML = `<div class="modal">
     <div class="mh"><b>${esc(title)}</b><input type="search" id="pk-q" placeholder="決まり字・かな・作者・番号で検索" style="flex:1" autofocus>
-      ${allowJo ? '<button data-v="0">序歌</button>' : ''}${allowNone ? '<button data-v="null">未確定にする</button>' : ''}<button data-v="close">閉じる</button></div>
+      ${allowJo ? '<button data-v="0">序歌</button>' : ''}${allowNone ? `<button data-v="null">${esc(noneLabel)}</button>` : ''}<button data-v="close">閉じる</button></div>
     <div class="mb">
-      ${cands.length ? `<div style="margin-bottom:10px"><div class="muted small" style="margin-bottom:4px">音声認識の候補</div><div class="cand">${cands.slice(0, 5).map(([n, s]) => `<button data-v="${n}" class="${n === 0 ? '' : ''}">${n === 0 ? '序歌' : STD_KIMARI[n]} <span class="muted small">${Math.round(s * 100)}%</span></button>`).join('')}</div></div>` : ''}
+      ${cands.length ? `<div style="margin-bottom:10px"><div class="muted small" style="margin-bottom:4px">${esc(candLabel)}</div><div class="cand">${cands.slice(0, 5).map(([n, s]) => `<button data-v="${n}" class="${n === 0 ? '' : ''}">${n === 0 ? '序歌' : STD_KIMARI[n]} <span class="muted small">${Math.round(s * 100)}%</span></button>`).join('')}</div></div>` : ''}
       <div class="picker-grid"></div>
     </div></div>`;
   document.body.appendChild(bg);
@@ -2395,7 +2933,11 @@ function drawEditor() {
           <span class="spacer"></span>
           <button class="small danger" data-act="clearLayout">配置をすべて消す</button>
         </div>
-        <div class="muted small">※ 映像からの札の自動認識は、撮影条件に合わせた学習データが必要なため今後の対応予定です。今は手入力で修正する形になります。</div>
+        <div class="row">
+          <button data-act="visVideo" title="動画を試合前(暗記時間・序歌)の札がよく見える場面で止めてから押します">動画から読み取る</button>
+          <button data-act="visPhoto" title="盤面を撮った写真(JPEG/PNG)から読み取ります">写真から読み取る</button>
+        </div>
+        <div class="muted small">読み取った後に、自信のない札(黄・赤)をクリックして直してから反映します。反映した札の画像は次回の読み取りの見本になり、使うほど当たりやすくなります。</div>
       </div>`;
     bindCommon(el); return;
   }
@@ -2461,6 +3003,8 @@ function afterReadEdit(redrawAll = true) {
 }
 ACT.gotoJo = () => { const jo = curMatch().reads.find(r => r.card === 0); if (jo) seekTo(jo.t + 1.5); };
 ACT.removePick = () => { const m = curMatch(); const k = invertBoard(m.layout)[App.pick]; if (k) delete m.layout[k]; App.pick = null; saveMatch(m); refreshRP(); drawBoard(); drawEditor(); };
+ACT.visVideo = () => openVision('video');
+ACT.visPhoto = () => openVision('photo');
 ACT.clearLayout = () => { if (!confirm('初期配置をすべて消しますか?')) return; const m = curMatch(); m.layout = {}; saveMatch(m); refreshRP(); drawBoard(); drawEditor(); drawReads(); };
 ACT.pickCard = () => {
   const m = curMatch(), r = curRead();
