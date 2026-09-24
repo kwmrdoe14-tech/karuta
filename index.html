@@ -198,7 +198,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25e</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25f</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -1589,6 +1589,7 @@ function phHits(q, forms) {
   const taken = [];
   for (const c of cands) {
     const ov = taken.some(t => {
+      if (t.no === c.no && t.part !== c.part) return false; // 同じ札の上の句と下の句は両方残す
       const o = Math.min(t.qe, c.qe) - Math.max(t.qs, c.qs);
       return o > 0.5 * Math.min(t.qe - t.qs, c.qe - c.qs);
     });
@@ -1609,133 +1610,180 @@ function phDedupe(s) {
   return String(s || '').replace(/(.{2,12}?)(?:\s*\1){2,}/g, '$1').slice(0, 160);
 }
 
-// 認識結果から、読みの一覧の札を判定し直す
-// ありあけ(読み上げ機)の順序:「上の句」…(取り)…「下の句」「次の札の上の句」…
-// ・上の句の当たり → その場面で読まれた札(1つの文に2枚以上あれば行を分ける)
-// ・下の句の当たり → 直前に読まれた札の確認(下の句だけの行は一覧から外す)
-// ・同じ札は1試合に1回だけ
-// ・読みらしい音がまったくない行(話し声・物音)は、手で記録したものがなければ外す
+// 認識結果から、読みの一覧の札と時刻を判定し直す
+// ありあけ(読み上げ機)の順序:…「下の句(前の札)」「上の句(次の札)」…(取り)…
+// ・声のまとまり(unit)ごとに、聞き取った文の中の上の句・下の句の並びを調べる
+// ・上の句 → そのまとまりで読まれた札(2枚以上なら行を分ける)。時刻はその上の句の読み始め
+// ・まとまりの最初の下の句 → 前のまとまりの札の確認
+// ・同じ札は1試合に1回だけ。手で決めた札・手で合わせた時刻は変えない
 async function rejudgeReads(m, onStatus) {
   const forms = await phForms();
   const reads = m.reads.slice().sort((a, b) => (a.t ?? 1e12) - (b.t ?? 1e12));
-  let events = (m.audio?.asrChunks || []).map(c => ({ t: c.s, s: c.s, e: c.e, text: c.text }));
-  if (!events.length) events = reads.filter(r => r.asr).map(r => ({ t: r.t, s: r.unit ? Math.max(r.t, r.unit[0]) : r.t, e: r.unit ? r.unit[1] : r.t + 6, text: r.asr }));
-  events = events.filter(e => e.text && e.text.trim()).sort((a, b) => a.t - b.t);
-  onStatus?.(`読みを照合しています…(${events.length}件)`);
-  const pr = await phPron(events.map(e => phDedupe(e.text)));
-  const hits = [];
-  events.forEach((e, i) => {
-    const q = phNorm(pr[i]);
-    e.noise = PH_NOISE.test(e.text.trim());
-    const hs = phHits(q, forms);
-    for (const h of hs) {
-      h.t = e.s + (e.e - e.s) * (q.length ? h.qs / q.length : 0);
-      h.ev = i;
-      hits.push(h);
-    }
-    // はっきりした当たりがない文は、参考として上の句の近いものを3つ(自動では決めない)
-    if (!hs.length && q.length >= 4) e.loose = phScore(q, forms.filter(f => f.part === 'k')).slice(0, 3).filter(x => x.score >= 0.3);
-  });
   const hasWork = r => r.taker || (r.fault && (r.fault.N || r.fault.F)) || (r.ops && r.ops.length) || (r.react && Object.keys(r.react).length) || r.kimariT != null;
   const isManual = r => r.cardSrc === 'manual' || (r.card != null && hasWork(r));
-  // 読みごとの窓(その読みの時刻から次の読みの直前まで)に当たりを振り分ける
-  const rowOf = t => { let k = -1; for (let i = 0; i < reads.length; i++) if ((reads[i].t ?? 0) - 1.5 <= t) k = i; return Math.max(0, k); };
-  const rows = reads.map(r => ({ r, hits: [], kami: [], cand: new Map(), shimoOnly: false, noise: false, anyText: false }));
-  events.forEach(e => { const row = rows[rowOf(e.t)]; if (!e.noise) row.anyText = true; if (e.loose) row.loose = (row.loose || []).concat(e.loose); });
-  hits.forEach(h => rows[rowOf(h.t)].hits.push(h));
-  const addC = (row, no, s) => { if (row) row.cand.set(no, Math.max(row.cand.get(no) || 0, s)); };
-  // 行の中の当たりを順に見る
-  const extra = []; // 同じ行に2枚目以降の上の句 → 新しい行
-  rows.forEach((row, i) => {
-    row.hits.sort((a, b) => a.t - b.t);
-    let curK = null; // この行で直前に読まれた上の句
-    for (const h of row.hits) {
+  const units = m.audio?.units || [];
+  // --- 声のまとまりごとに行をまとめる
+  const gmap = new Map(), groups = [];
+  for (const r of reads) {
+    const key = r.unit ? r.unit[0].toFixed(2) + '-' + r.unit[1].toFixed(2) : 'r' + r.id;
+    let g = gmap.get(key);
+    if (!g) {
+      const s = r.unit ? r.unit[0] : (r.t ?? 0), e = r.unit ? r.unit[1] : (r.t ?? 0) + 8;
+      const u = units.find(u => Math.abs(u.s - s) < 0.05);
+      // 読み始めの候補:0.8秒以上の間で区切った句の頭
+      const heads = [];
+      (u?.subs || [[s, e]]).forEach((x, k, a) => { if (!k || x[0] - a[k - 1][1] >= 0.8) heads.push(x[0]); });
+      g = { key, s, e, heads, rows: [], events: [], hits: [], K: [], shimoSeen: false, anyText: false, loose: [] };
+      gmap.set(key, g); groups.push(g);
+    }
+    g.rows.push(r);
+  }
+  groups.sort((a, b) => a.s - b.s);
+  const groupAt = t => { let k = 0; for (let i = 0; i < groups.length; i++) if (groups[i].s - 1 <= t) k = i; return groups[k]; };
+  // --- 聞き取った文(保存されたチャンクがあればそれ、なければ行の認識文)
+  const chunks = (m.audio?.asrChunks || []).filter(c => c.text && c.text.trim());
+  if (chunks.length) chunks.forEach(c => groupAt(c.s).events.push({ s: c.s, e: c.e, text: c.text }));
+  else groups.forEach(g => { const r = g.rows.find(r => r.asr && r.asr.trim()); if (r) g.events.push({ s: g.s, e: g.e, text: r.asr, r }); });
+  const evs = groups.flatMap(g => g.events.map(e => ({ g, e })));
+  onStatus?.(`読みを照合しています…(${evs.length}件)`);
+  const pr = await phPron(evs.map(x => phDedupe(x.e.text)));
+  evs.forEach(({ g, e }, i) => {
+    const q = phNorm(pr[i]);
+    if (!PH_NOISE.test(e.text.trim())) g.anyText = true;
+    // 行の認識文が、まとまりの後半だけを聞き取ったもの(文字数が時間に比べて少ない)なら、その行の時刻から数える
+    if (e.r && e.r.t > e.s + 0.5 && q.length / Math.max(1, e.e - e.s) < 1.8) e.s = e.r.t;
+    const hs = phHits(q, forms);
+    // 文の中の位置から時刻を見積もり、近くの句の頭(-5〜+4秒)にそろえる。なければ見積もりのまま
+    const when = qs => {
+      const t0 = e.s + (e.e - e.s) * (q.length ? qs / q.length : 0);
+      let best = null;
+      for (const x of g.heads) if (x >= e.s - 0.5 && x >= t0 - 5 && x <= t0 + 4 && (best == null || Math.abs(x - t0) < Math.abs(best - t0))) best = x;
+      return best ?? t0;
+    };
+    hs.forEach(h => {
+      h.t = when(h.qs);
+      (h.alt || []).forEach(x => { x.t = when(x.qs); });
+      g.hits.push(h);
+    });
+    if (!hs.length && q.length >= 4) g.loose.push(...phScore(q, forms.filter(f => f.part === 'k')).slice(0, 3).filter(x => x.score >= 0.3));
+  });
+  // --- まとまりの中の上の句・下の句の並びを読む
+  const addC = (k, no, s) => { if (k) k.cand.set(no, Math.max(k.cand.get(no) || 0, s)); };
+  const mkK = (no, score, t, alt) => { const k = { no, score, t, alt: alt || [], cand: new Map() }; return k; };
+  let prevLast = null; // 直前のまとまりの最後の読み
+  for (const g of groups) {
+    g.hits.sort((a, b) => a.t - b.t || a.qs - b.qs);
+    let curK = null;
+    for (const h of g.hits) {
       const altHas = (no, part) => (h.alt || []).some(a => a.no === no && a.part === part && a.score >= h.score - 0.15);
-      const newK = sc => { const k = { no: h.no, score: sc, t: h.t, alt: [] }; row.kami.push(k); curK = k; };
+      // 下の句から見つけた札は、同じ札の上の句らしい部分があればその時刻を使う
+      const newK = sc => { const ak = (h.alt || []).find(a => a.no === h.no && a.part === 'k'); curK = mkK(h.no, sc, ak ? Math.min(ak.t, h.t) : h.t); g.K.push(curK); };
       if (h.part === 'k') {
         if (curK && curK.no === h.no) { curK.score = Math.max(curK.score, h.score); continue; }
-        if (curK && altHas(curK.no, 's')) continue; // 実は直前の札の下の句
-        const k = { no: h.no, score: h.score, t: h.t, alt: h.alt || [] };
-        row.kami.push(k); curK = k;
+        if (curK && altHas(curK.no, 's')) continue; // 実は今の札の下の句
+        curK = mkK(h.no, h.score, h.t, h.alt); g.K.push(curK);
       } else {
-        if (h.no === 0) { if (!curK || curK.no !== 0) newK(h.score); continue; } // 序歌は上の句・下の句とも序歌の行
+        if (h.no === 0) { if (!curK || curK.no !== 0) newK(h.score); continue; } // 序歌
         if (curK) {
-          // この行の上の句の下の句(空札で続けて読まれた) → その札の確認
           if (curK.no === h.no || altHas(curK.no, 's')) { curK.score = Math.max(curK.score, Math.min(1, h.score * 0.8 + 0.2)); continue; }
-          // 別の札の下の句がはっきり聞こえた → その札の上の句は聞き取れなかったが読まれている
-          if (h.score >= 0.65) newK(h.score * 0.85);
+          if (h.score >= 0.65) newK(h.score * 0.85); // 上の句は聞き取れなかったが、下の句がはっきり聞こえた札
           continue;
         }
-        // 行の途中から始まる下の句(前に聞き取れない部分がある) → この場面で読まれた札
         if (h.qs >= 4 && h.score >= 0.6) { newK(h.score * 0.85); continue; }
-        // 行の最初の下の句 → 直前の読みの札
-        let j = i - 1;
-        while (j >= 0 && rows[j].shimoOnly && !rows[j].kami.length) j--;
-        const prev = rows[j];
-        if (prev) {
-          const pk = prev.kami[prev.kami.length - 1];
-          if (pk && pk.no === h.no) pk.score = Math.max(pk.score, Math.min(1, pk.score + 0.15), h.score * 0.9);
-          else if (!pk) addC(prev, h.no, h.score * 0.9);
-          else addC(prev, h.no, h.score * 0.5);
+        // まとまりの最初の下の句 → 前の読みの札
+        const pk = prevLast;
+        if (pk) {
+          if (pk.no === h.no) pk.score = Math.max(pk.score, Math.min(1, pk.score + 0.15), h.score * 0.9);
+          else if (pk.no == null) addC(pk, h.no, h.score * 0.9);
+          else addC(pk, h.no, h.score * 0.5);
         }
-        row.shimoSeen = true;
+        g.shimoSeen = true;
       }
     }
-    row.shimoOnly = !!row.shimoSeen && !row.kami.length;
-  });
-  rows.forEach((row, i) => {
-    row.kami.forEach((k, n) => {
-      if (n === 0) { addC(row, k.no, k.score); k.alt.forEach(a => { if (a.part === 'k') addC(row, a.no, Math.min(a.score, k.score - 0.01)); }); }
-      else if (k.score >= 0.55) extra.push({ after: i, k });
-      else addC(row, k.no, k.score * 0.8);
-    });
-  });
-  // 2枚目以降の上の句を新しい行として加える
-  for (const x of extra) {
-    const base = rows[x.after].r;
-    const r = { id: uid(), t: +x.k.t.toFixed(2), unit: base.unit ? base.unit.slice() : undefined, card: null, taker: null, fault: {}, ops: [], react: {}, asr: base.asr, split: true };
-    const row = { r, hits: [], kami: [x.k], cand: new Map([[x.k.no, x.k.score]]), anyText: true, isNew: true };
-    x.k.alt.forEach(a => { if (a.part === 'k') addC(row, a.no, Math.min(a.score, x.k.score - 0.01)); });
-    rows.push(row);
+    // 上の句が見つからないまとまりは「札不明」の読みを1つ置く(下の句だけの場面は置かない)
+    if (!g.K.length && !g.shimoSeen) g.K.push(mkK(null, 0, null));
+    if (g.K.length) prevLast = g.K[g.K.length - 1];
   }
-  rows.sort((a, b) => (a.r.t ?? 1e12) - (b.r.t ?? 1e12));
-  // 同じ札は1回だけ:点の高い順に割り当てる(手で決めた札は固定)
-  const used = new Set(rows.filter(x => isManual(x.r)).map(x => x.r.card).filter(c => c != null));
-  const assign = new Map(), all = [];
-  rows.forEach((x, i) => { if (!isManual(x.r)) x.cand.forEach((s, no) => { if (s >= 0.5) all.push([s, i, no]); }); });
+  // 候補の点(後ろの下の句で点が上がることがあるので、全部読んでから)
+  groups.forEach(g => g.K.forEach((k, n) => {
+    if (k.no == null) return;
+    addC(k, k.no, n === 0 || k.score >= 0.55 ? k.score : k.score * 0.8);
+    k.alt.forEach(a => { if (a.part === 'k') addC(k, a.no, Math.min(a.score, k.score - 0.01)); });
+  }));
+  // --- 読み(K)と行を結びつける
+  const links = []; // {k, r(既存の行 or null), g}
+  for (const g of groups) {
+    const man = g.rows.filter(isManual), auto = g.rows.filter(r => !isManual(r)).sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
+    let ks = g.K.slice();
+    const take = k => { ks = ks.filter(x => x !== k); };
+    for (const r of man) {
+      let k = r.card != null ? ks.find(x => x.no === r.card) : null;
+      if (!k && ks.length && r.card != null) k = ks.slice().sort((a, b) => Math.abs((a.t ?? r.t) - r.t) - Math.abs((b.t ?? r.t) - r.t))[0];
+      if (k) { take(k); links.push({ k, r, g, fixed: true }); }
+      else links.push({ k: null, r, g, fixed: true });
+    }
+    // 前回と同じ札の行はそのまま同じ行に(行の入れ替わりを防ぐ)
+    for (const r of auto.slice()) {
+      const k = r.card != null ? ks.find(x => x.no === r.card) : null;
+      if (k) { take(k); auto.splice(auto.indexOf(r), 1); links.push({ k, r, g }); }
+    }
+    for (const k of ks) {
+      if (k.no == null && !auto.length && man.length) continue; // 手で直した行があるまとまりに「札不明」は足さない
+      // 時刻の一番近い行に
+      let r = null;
+      if (auto.length) { r = k.t == null ? auto[0] : auto.slice().sort((a, b) => Math.abs((a.t ?? 0) - k.t) - Math.abs((b.t ?? 0) - k.t))[0]; auto.splice(auto.indexOf(r), 1); }
+      links.push({ k, r, g });
+    }
+    auto.forEach(r => links.push({ k: null, r, g, extra: true }));
+  }
+  // --- 同じ札は1回だけ:点の高い順に割り当てる(手で決めた札は固定)
+  const used = new Set(links.filter(l => l.fixed).map(l => l.r.card).filter(c => c != null));
+  const all = [];
+  links.forEach((l, i) => { if (!l.fixed && l.k) l.k.cand.forEach((s, no) => { if (s >= 0.5) all.push([s, i, no]); }); });
   all.sort((a, b) => b[0] - a[0]);
-  for (const [, i, no] of all) {
-    if (assign.has(i) || used.has(no) || rows[i].shimoOnly) continue;
-    assign.set(i, no); used.add(no);
-  }
-  // 最後に札が特定できた読みより後ろの行(試合後の会話など)
-  let lastIdx = -1;
-  rows.forEach((x, i) => { if (assign.has(i) || (isManual(x.r) && x.r.card != null)) lastIdx = i; });
-  let assigned = 0, removed = 0, noise = 0, split = 0;
+  const assign = new Map();
+  for (const [, i, no] of all) { if (assign.has(i) || used.has(no)) continue; assign.set(i, no); used.add(no); }
+  let lastG = -1;
+  links.forEach((l, i) => { if (assign.has(i) || (l.fixed && l.r.card != null)) lastG = Math.max(lastG, groups.indexOf(l.g)); });
+  // --- 行を作り直す
+  let assigned = 0, removed = 0, noise = 0, split = 0, moved = 0;
   const keep = [];
-  rows.forEach((x, i) => {
-    const r = x.r;
-    if (!isManual(r)) {
-      const top = [...x.cand.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([no, s]) => [no, +Math.min(1, s).toFixed(2)]);
-      const weak = !top.length || top[0][1] < 0.45;
-      if (assign.has(i)) { r.card = assign.get(i); r.cardSrc = 'auto'; r.cand = top; assigned++; if (x.isNew) split++; }
-      else if (x.isNew) return;
-      else if (hasWork(r)) { r.card = null; r.cand = top; }
-      else if (x.shimoOnly) { removed++; return; }
-      else if (lastIdx >= 0 && i > lastIdx && weak) { noise++; return; }
-      else if (!x.hits.length && !x.anyText) { noise++; return; } // 聞き取れた言葉がない(物音・拍手・音楽など)
-      else {
-        r.card = null;
-        // 当たりがない行は、参考の候補(近いもの)を出す
-        if (!top.length && x.loose) { const seen = new Set(); r.cand = x.loose.sort((a, b) => b.score - a.score).filter(l => !seen.has(l.no) && seen.add(l.no)).slice(0, 3).map(l => [l.no, Math.min(0.49, l.score)]); }
-        else r.cand = top;
-      }
-    } else if (r.card != null) assigned++;
-    delete r.split;
+  const setT = (r, k) => {
+    if (!k || k.t == null || r.tSrc === 'manual') return;
+    const t = +k.t.toFixed(2);
+    if (r.t == null || Math.abs(r.t - t) > 0.05) { r.t = t; moved++; }
+  };
+  links.forEach((l, i) => {
+    const { k, g } = l;
+    let r = l.r;
+    const topOf = () => k ? [...k.cand.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([no, s]) => [no, +Math.min(1, s).toFixed(2)]) : [];
+    if (l.fixed) {
+      if (r.card != null) assigned++;
+      if (k && k.no != null) setT(r, k);
+      keep.push(r); return;
+    }
+    const top = topOf();
+    if (assign.has(i)) {
+      if (!r) { r = { id: uid(), t: null, unit: [g.s, g.e], card: null, taker: null, fault: {}, ops: [], react: {}, asr: g.rows[0]?.asr }; split++; }
+      r.card = assign.get(i); r.cardSrc = 'auto'; r.cand = top; assigned++;
+      setT(r, k); keep.push(r); return;
+    }
+    if (!r) return; // 新しく分けた行で札が決まらないもの
+    if (hasWork(r)) { r.card = null; r.cand = top; keep.push(r); return; }
+    if (l.extra) { removed++; return; } // 以前に分けた行で、今回は読みが見つからないもの
+    const gi = groups.indexOf(g), weak = !top.length || top[0][1] < 0.45;
+    if (g.shimoSeen && !(k && k.no != null)) { removed++; return; } // 下の句だけの場面
+    if (lastG >= 0 && gi > lastG && weak) { noise++; return; } // 試合後の会話など
+    if (!g.hits.length && !g.anyText) { noise++; return; } // 聞き取れた言葉がない(物音・拍手・音楽など)
+    r.card = null;
+    if (!top.length && g.loose.length) { const seen = new Set(); r.cand = g.loose.sort((a, b) => b.score - a.score).filter(x => !seen.has(x.no) && seen.add(x.no)).slice(0, 3).map(x => [x.no, Math.min(0.49, x.score)]); }
+    else r.cand = top;
+    if (k && k.no != null) setT(r, k);
     keep.push(r);
   });
+  keep.sort((a, b) => (a.t ?? 1e12) - (b.t ?? 1e12));
   m.reads = keep;
-  return { assigned, removed, noise, split, total: keep.length };
+  return { assigned, removed, noise, split, moved, total: keep.length };
 }
 
 // ===== アプリ状態 =====
@@ -2423,7 +2471,7 @@ ACT.setCard = el => { const r = curRead(); r.card = +el.dataset.v; r.cardSrc = '
 ACT.setTaker = el => { const r = curRead(); r.taker = el.dataset.v || null; afterReadEdit(); };
 ACT.toggleFault = el => { const r = curRead(); r.fault = r.fault || {}; r.fault[el.dataset.v] = !r.fault[el.dataset.v]; afterReadEdit(); };
 ACT.delOp = el => { curRead().ops.splice(+el.dataset.i, 1); afterReadEdit(); };
-ACT.setT = () => { const t = nowT(); if (t == null) return; curRead().t = t; sortReads(); afterReadEdit(); };
+ACT.setT = () => { const t = nowT(); if (t == null) return; const r = curRead(); r.t = t; r.tSrc = 'manual'; sortReads(); afterReadEdit(); };
 ACT.gotoT = () => seekTo(curRead().t);
 ACT.setK = () => { const t = nowT(); if (t == null) return; curRead().kimariT = t; afterReadEdit(); };
 ACT.clearK = () => { curRead().kimariT = null; afterReadEdit(); };
@@ -2661,7 +2709,7 @@ ACT.rejudge = async el => {
   try {
     const r = await rejudgeReads(m, t => setStatus(t));
     saveMatch(m, true); App.sel = -1; refreshRP(); drawReads(); drawEditor(); drawBoard(); drawTimelines();
-    setStatus(`照合が終わりました。${r.assigned}件の札を特定しました(うち空札の続きから見つけた札${r.split}件)。下の句だけの行${r.removed}件・読み以外の音の行${r.noise}件を整理し、残り${r.total}件です。黄色の行を確認してください。`);
+    setStatus(`照合が終わりました。${r.total}行のうち${r.assigned}行の札が決まりました(空札の続きから見つけた札${r.split}件、読み始めの時刻を直した行${r.moved}件)。下の句だけの行${r.removed}件・読み以外の音の行${r.noise}件を整理しました。黄色の行を確認してください。`);
   } catch (e) { console.error(e); setStatus('照合に失敗しました:' + e.message); }
   finally { el.disabled = false; }
 };
