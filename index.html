@@ -1,0 +1,2139 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>かるた分析ノート</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f6f4ef; --surface: #fffefb; --surface-2: #f0ede5; --line: #dcd7cb; --line-2: #c9c2b2;
+  --text: #1d1c1a; --text-2: #55524b; --muted: #8a867c;
+  --accent: #2d4a8a; --accent-ink: #fff; --accent-soft: #e4e9f5;
+  --near: #2a78d6; --far: #eb6834; --near-soft: #e3eefb; --far-soft: #fdebe3;
+  --warn: #b8860b; --warn-soft: #fdf3d7; --bad: #c0392b; --good: #1f8a4c;
+  --tatami: #e9e3cf; --tatami-line: #d4cbb0; --card: #fffdf6; --card-line: #3a5a3a;
+  --radius: 8px; --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #161614; --surface: #1f1f1d; --surface-2: #2a2a27; --line: #3a3934; --line-2: #4a4843;
+    --text: #f1efe8; --text-2: #c3c0b5; --muted: #8f8b80;
+    --accent: #8ea8e8; --accent-ink: #10131c; --accent-soft: #263049;
+    --near: #3987e5; --far: #d95926; --near-soft: #1d2d44; --far-soft: #3d2519;
+    --warn: #e0b040; --warn-soft: #3a3120; --bad: #e66767; --good: #4cc27d;
+    --tatami: #3a3628; --tatami-line: #4c4634; --card: #2b2a24; --card-line: #7fa87f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161614; --surface: #1f1f1d; --surface-2: #2a2a27; --line: #3a3934; --line-2: #4a4843;
+  --text: #f1efe8; --text-2: #c3c0b5; --muted: #8f8b80;
+  --accent: #8ea8e8; --accent-ink: #10131c; --accent-soft: #263049;
+  --near: #3987e5; --far: #d95926; --near-soft: #1d2d44; --far-soft: #3d2519;
+  --warn: #e0b040; --warn-soft: #3a3120; --bad: #e66767; --good: #4cc27d;
+  --tatami: #3a3628; --tatami-line: #4c4634; --card: #2b2a24; --card-line: #7fa87f;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: 1px solid var(--line-2); background: var(--surface); border-radius: 6px; padding: 5px 10px; }
+button:hover { background: var(--surface-2); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.primary:hover { filter: brightness(1.08); }
+button.ghost { border-color: transparent; background: transparent; }
+button.small { padding: 2px 7px; font-size: 12px; }
+button:disabled { opacity: .45; cursor: default; }
+button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600; }
+button.on.n { background: var(--near-soft); border-color: var(--near); }
+button.on.f { background: var(--far-soft); border-color: var(--far); }
+button.danger { color: var(--bad); }
+input[type=text], input[type=date], input[type=number], input[type=search], select, textarea {
+  border: 1px solid var(--line-2); background: var(--surface); border-radius: 6px; padding: 5px 8px; }
+input[type=number] { width: 72px; }
+label { color: var(--text-2); }
+h1, h2, h3 { margin: 0; line-height: 1.3; }
+h2 { font-size: 17px; }
+h3 { font-size: 14px; color: var(--text-2); font-weight: 600; margin-bottom: 8px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+.card-box { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow); }
+.stack > * + * { margin-top: 12px; }
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; background: var(--surface-2); color: var(--text-2); }
+.pill.n { background: var(--near-soft); color: var(--text); border-left: 3px solid var(--near); }
+.pill.f { background: var(--far-soft); color: var(--text); border-left: 3px solid var(--far); }
+.pill.warn { background: var(--warn-soft); color: var(--text); }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+.dot.n { background: var(--near); } .dot.f { background: var(--far); }
+table.t { border-collapse: collapse; width: 100%; font-size: 13px; }
+table.t th, table.t td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+table.t th { color: var(--text-2); font-weight: 600; background: var(--surface-2); }
+.scroll table.t th, .reads table.t th { position: sticky; top: 0; z-index: 1; }
+table.t td.num, table.t th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.warnbox { background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+.infobox { background: var(--accent-soft); border-left: 3px solid var(--accent); padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+
+/* ヘッダー */
+header.app { display: flex; align-items: center; gap: 14px; padding: 10px 18px; background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 20; }
+header.app .logo { font-weight: 700; font-size: 16px; letter-spacing: .02em; }
+header.app .logo span { color: var(--accent); }
+header.app nav button { border: none; background: none; padding: 6px 10px; border-radius: 6px; color: var(--text-2); }
+header.app nav button.on { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+main { padding: 16px 18px 40px; max-width: 1600px; margin: 0 auto; }
+
+/* 試合一覧 */
+.match-list { display: grid; gap: 8px; }
+.match-item { display: grid; grid-template-columns: 110px 1fr auto auto; gap: 12px; align-items: center; padding: 10px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.match-item:hover { border-color: var(--accent); }
+.vs { font-weight: 600; }
+.vs .w { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+
+/* 試合画面 */
+.match-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 2px; background: var(--surface-2); padding: 3px; border-radius: 8px; }
+.tabs button { border: none; background: none; padding: 6px 18px; border-radius: 6px; color: var(--text-2); }
+.tabs button.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+.edit-grid { display: grid; grid-template-columns: minmax(420px, 1.15fr) minmax(460px, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .edit-grid { grid-template-columns: 1fr; } }
+.video-wrap { background: #000; border-radius: var(--radius); overflow: hidden; position: relative; aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
+.video-wrap video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.video-wrap .placeholder { color: #bbb; text-align: center; padding: 20px; }
+.video-wrap .badge { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,.6); color: #fff; font-size: 12px; padding: 2px 8px; border-radius: 4px; pointer-events: none; }
+.transport { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.transport .time { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 120px; }
+canvas.tl { width: 100%; display: block; border-radius: 6px; background: var(--surface-2); cursor: pointer; }
+.tl-label { font-size: 11px; color: var(--muted); margin: 6px 0 2px; display: flex; justify-content: space-between; }
+.progress { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.progress > div { height: 100%; background: var(--accent); width: 0; transition: width .2s; }
+details.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; }
+details.panel > summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }
+details.panel > summary::before { content: '▸'; color: var(--muted); }
+details.panel[open] > summary::before { content: '▾'; }
+details.panel > .body { margin-top: 10px; }
+kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--surface); }
+
+/* 盤面 */
+.board { background: var(--tatami); border-radius: var(--radius); padding: 8px; user-select: none; }
+.board .terr { display: grid; grid-template-columns: repeat(6, 1fr) 10px repeat(6, 1fr); gap: 3px; }
+.board .midline { height: 14px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--text-2); }
+.board .midline::before, .board .midline::after { content: ''; flex: 1; border-top: 1px dashed var(--tatami-line); margin: 0 8px; }
+.board .who { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; margin: 2px 2px 4px; }
+.board .who .cnt { font-variant-numeric: tabular-nums; }
+.slot { aspect-ratio: 5/7; border-radius: 3px; border: 1px dashed transparent; position: relative; min-width: 0; }
+.slot.empty:hover { border-color: var(--tatami-line); background: rgba(255,255,255,.2); }
+.slot.gap { visibility: hidden; }
+.slot.target { border-color: var(--accent); background: var(--accent-soft); }
+.fuda { position: absolute; inset: 0; background: var(--card); border: 1.5px solid var(--card-line); border-radius: 3px; display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; line-height: 1.1; font-weight: 700; cursor: pointer; overflow: hidden; padding: 1px; text-align: center; word-break: break-all; }
+.fuda .no { font-size: 8px; font-weight: 400; color: var(--muted); }
+.fuda.sel { outline: 3px solid var(--accent); outline-offset: 1px; z-index: 2; }
+.fuda.read { background: #ffe38a; border-color: #b8860b; color: #1d1c1a; }
+.fuda.ghost { background: transparent; border-style: dashed; color: var(--muted); opacity: .8; cursor: default; }
+.fuda.moved { box-shadow: 0 0 0 2px var(--far) inset; }
+.fuda.friend { box-shadow: 0 0 0 2px var(--warn) inset; }
+.board.N-side .fuda { }
+.side-N .who { color: var(--near); } .side-F .who { color: var(--far); }
+
+/* 読みリスト */
+.reads { max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.reads table.t td { cursor: pointer; }
+.reads tr.sel td { background: var(--accent-soft); }
+.reads tr.low td:nth-child(3) { color: var(--warn); }
+.editor { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.editor .title { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.editor .kim { font-size: 22px; font-weight: 800; letter-spacing: .05em; }
+.editor .poem { font-size: 13px; color: var(--text-2); }
+.editor .grid { display: grid; grid-template-columns: 90px 1fr; gap: 6px 10px; align-items: center; margin-top: 10px; }
+.editor .grid > label { font-size: 12px; }
+.cand { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+/* モーダル */
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding-top: 6vh; }
+.modal { background: var(--surface); border-radius: 10px; width: min(760px, 94vw); max-height: 84vh; display: flex; flex-direction: column; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.modal .mh { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; align-items: center; }
+.modal .mb { padding: 12px 16px; overflow: auto; }
+.picker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+.picker-grid button { text-align: left; padding: 5px 7px; line-height: 1.25; }
+.picker-grid button b { display: block; font-size: 14px; }
+.picker-grid button span { font-size: 10px; color: var(--muted); display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.picker-grid button.used { opacity: .35; }
+.picker-grid button.cand-hit { border-color: var(--accent); background: var(--accent-soft); }
+
+/* 集計 */
+.score { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px; }
+.score .side { text-align: center; }
+.score .name { font-size: 18px; font-weight: 700; }
+.score .num { font-size: 36px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.score .win { color: var(--good); font-weight: 700; }
+.area4 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-top: 6px; }
+.area4 div { background: var(--surface-2); border-radius: 4px; padding: 8px; text-align: center; }
+.area4 div b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.area4 .lab { font-size: 11px; color: var(--muted); }
+.area4 .enemy { background: var(--surface-2); }
+.area4 .own { background: var(--tatami); }
+.area-cap { font-size: 11px; color: var(--muted); text-align: center; margin: 2px 0; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { font-size: 12px; padding: 1px 7px; border: 1px solid var(--line-2); border-radius: 4px; background: var(--card); font-weight: 600; }
+svg.chart { width: 100%; height: auto; display: block; overflow: visible; }
+svg.chart text { fill: var(--text-2); font-size: 11px; }
+svg.chart .grid { stroke: var(--line); stroke-width: 1; }
+svg.chart .axis { stroke: var(--line-2); }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-2); margin-bottom: 4px; }
+.tip { position: fixed; pointer-events: none; background: var(--text); color: var(--bg); font-size: 12px; padding: 4px 8px; border-radius: 4px; z-index: 60; white-space: nowrap; display: none; }
+.slider-row { display: grid; grid-template-columns: 150px 1fr 60px; gap: 8px; align-items: center; font-size: 13px; }
+.bar-bg { background: var(--surface-2); height: 8px; border-radius: 4px; overflow: hidden; }
+.bar-bg > div { height: 100%; border-radius: 4px; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 6px; z-index: 70; font-size: 13px; }
+
+</style>
+</head>
+<body>
+<header class="app">
+  <div class="logo">かるた<span>分析</span>ノート</div>
+  <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
+  <span class="spacer"></span>
+  <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
+  <label class="small" style="cursor:pointer;border:1px solid var(--line-2);border-radius:6px;padding:2px 7px;background:var(--surface)">読み込む<input type="file" accept="application/json,.json" id="btn-import" hidden></label>
+</header>
+<main></main>
+<script type="module">
+// ===== 百人一首データ =====
+// 番号|作者|上の句|下の句|上の句(歴史的仮名)|下の句(歴史的仮名)|上の句(読み・音)
+// 読みは決まり字計算用。「おう/おほ」は同じ音(おお)として扱う(あふこ=三字決まり)。
+const POEM_SRC = `
+0|王仁(序歌)|難波津に 咲くやこの花 冬ごもり|今は春べと 咲くやこの花|なにはづに さくやこのはな ふゆごもり|いまははるべと さくやこのはな|なにわずに さくやこのはな ふゆごもり
+1|天智天皇|秋の田の かりほの庵の 苫をあらみ|わが衣手は 露にぬれつつ|あきのたの かりほのいほの とまをあらみ|わがころもでは つゆにぬれつつ|あきのたの かりおのいおの とまおあらみ
+2|持統天皇|春過ぎて 夏来にけらし 白妙の|衣ほすてふ 天の香具山|はるすぎて なつきにけらし しろたへの|ころもほすてふ あまのかぐやま|はるすぎて なつきにけらし しろたえの
+3|柿本人麻呂|あしびきの 山鳥の尾の しだり尾の|ながながし夜を ひとりかも寝む|あしびきの やまどりのをの しだりをの|ながながしよを ひとりかもねむ|あしびきの やまどりのおの しだりおの
+4|山部赤人|田子の浦に うち出でてみれば 白妙の|富士の高嶺に 雪は降りつつ|たごのうらに うちいでてみれば しろたへの|ふじのたかねに ゆきはふりつつ|たごのうらに うちいでてみれば しろたえの
+5|猿丸大夫|奥山に 紅葉踏み分け 鳴く鹿の|声聞く時ぞ 秋は悲しき|おくやまに もみぢふみわけ なくしかの|こゑきくときぞ あきはかなしき|おくやまに もみじふみわけ なくしかの
+6|中納言家持|かささぎの 渡せる橋に 置く霜の|白きを見れば 夜ぞ更けにける|かささぎの わたせるはしに おくしもの|しろきをみれば よぞふけにける|かささぎの わたせるはしに おくしもの
+7|安倍仲麿|天の原 ふりさけ見れば 春日なる|三笠の山に 出でし月かも|あまのはら ふりさけみれば かすがなる|みかさのやまに いでしつきかも|あまのはら ふりさけみれば かすがなる
+8|喜撰法師|わが庵は 都のたつみ しかぞ住む|世をうぢ山と 人はいふなり|わがいほは みやこのたつみ しかぞすむ|よをうぢやまと ひとはいふなり|わがいおわ みやこのたつみ しかぞすむ
+9|小野小町|花の色は うつりにけりな いたづらに|わが身世にふる ながめせしまに|はなのいろは うつりにけりな いたづらに|わがみよにふる ながめせしまに|はなのいろわ うつりにけりな いたずらに
+10|蝉丸|これやこの 行くも帰るも 別れては|知るも知らぬも 逢坂の関|これやこの ゆくもかへるも わかれては|しるもしらぬも あふさかのせき|これやこの ゆくもかえるも わかれてわ
+11|参議篁|わたの原 八十島かけて 漕ぎ出でぬと|人には告げよ 海人の釣舟|わたのはら やそしまかけて こぎいでぬと|ひとにはつげよ あまのつりぶね|わたのはら やそしまかけて こぎいでぬと
+12|僧正遍昭|天つ風 雲の通ひ路 吹きとぢよ|をとめの姿 しばしとどめむ|あまつかぜ くものかよひぢ ふきとぢよ|をとめのすがた しばしとどめむ|あまつかぜ くものかよいじ ふきとじよ
+13|陽成院|筑波嶺の 峰より落つる 男女川|恋ぞつもりて 淵となりぬる|つくばねの みねよりおつる みなのがは|こひぞつもりて ふちとなりぬる|つくばねの みねよりおつる みなのがわ
+14|河原左大臣|陸奥の しのぶもぢずり 誰ゆゑに|乱れそめにし 我ならなくに|みちのくの しのぶもぢずり たれゆゑに|みだれそめにし われならなくに|みちのくの しのぶもじずり たれゆえに
+15|光孝天皇|君がため 春の野に出でて 若菜摘む|わが衣手に 雪は降りつつ|きみがため はるののにいでて わかなつむ|わがころもでに ゆきはふりつつ|きみがため はるののにいでて わかなつむ
+16|中納言行平|立ち別れ いなばの山の 峰に生ふる|まつとし聞かば 今帰り来む|たちわかれ いなばのやまの みねにおふる|まつとしきかば いまかへりこむ|たちわかれ いなばのやまの みねにおうる
+17|在原業平朝臣|ちはやぶる 神代も聞かず 竜田川|からくれなゐに 水くくるとは|ちはやぶる かみよもきかず たつたがは|からくれなゐに みづくくるとは|ちはやぶる かみよもきかず たつたがわ
+18|藤原敏行朝臣|住の江の 岸に寄る波 よるさへや|夢の通ひ路 人目よくらむ|すみのえの きしによるなみ よるさへや|ゆめのかよひぢ ひとめよくらむ|すみのえの きしによるなみ よるさえや
+19|伊勢|難波潟 短き葦の ふしの間も|逢はでこの世を 過ぐしてよとや|なにはがた みじかきあしの ふしのまも|あはでこのよを すぐしてよとや|なにわがた みじかきあしの ふしのまも
+20|元良親王|わびぬれば 今はた同じ 難波なる|みをつくしても 逢はむとぞ思ふ|わびぬれば いまはたおなじ なにはなる|みをつくしても あはむとぞおもふ|わびぬれば いまはたおなじ なにわなる
+21|素性法師|今来むと 言ひしばかりに 長月の|有明の月を 待ち出でつるかな|いまこむと いひしばかりに ながつきの|ありあけのつきを まちいでつるかな|いまこんと いいしばかりに ながつきの
+22|文屋康秀|吹くからに 秋の草木の しをるれば|むべ山風を 嵐といふらむ|ふくからに あきのくさきの しをるれば|むべやまかぜを あらしといふらむ|ふくからに あきのくさきの しおるれば
+23|大江千里|月見れば 千々にものこそ 悲しけれ|わが身ひとつの 秋にはあらねど|つきみれば ちぢにものこそ かなしけれ|わがみひとつの あきにはあらねど|つきみれば ちじにものこそ かなしけれ
+24|菅家|このたびは 幣も取りあへず 手向山|紅葉の錦 神のまにまに|このたびは ぬさもとりあへず たむけやま|もみぢのにしき かみのまにまに|このたびわ ぬさもとりあえず たむけやま
+25|三条右大臣|名にし負はば 逢坂山の さねかづら|人に知られで くるよしもがな|なにしおはば あふさかやまの さねかづら|ひとにしられで くるよしもがな|なにしおわば おおさかやまの さねかずら
+26|貞信公|小倉山 峰のもみぢ葉 心あらば|今ひとたびの みゆき待たなむ|をぐらやま みねのもみぢば こころあらば|いまひとたびの みゆきまたなむ|おぐらやま みねのもみじば こころあらば
+27|中納言兼輔|みかの原 わきて流るる 泉川|いつ見きとてか 恋しかるらむ|みかのはら わきてながるる いづみがは|いつみきとてか こひしかるらむ|みかのはら わきてながるる いずみがわ
+28|源宗于朝臣|山里は 冬ぞ寂しさ まさりける|人目も草も かれぬと思へば|やまざとは ふゆぞさびしさ まさりける|ひとめもくさも かれぬとおもへば|やまざとわ ふゆぞさびしさ まさりける
+29|凡河内躬恒|心あてに 折らばや折らむ 初霜の|置きまどはせる 白菊の花|こころあてに をらばやをらむ はつしもの|おきまどはせる しらぎくのはな|こころあてに おらばやおらん はつしもの
+30|壬生忠岑|有明の つれなく見えし 別れより|暁ばかり 憂きものはなし|ありあけの つれなくみえし わかれより|あかつきばかり うきものはなし|ありあけの つれなくみえし わかれより
+31|坂上是則|朝ぼらけ 有明の月と 見るまでに|吉野の里に 降れる白雪|あさぼらけ ありあけのつきと みるまでに|よしののさとに ふれるしらゆき|あさぼらけ ありあけのつきと みるまでに
+32|春道列樹|山川に 風のかけたる しがらみは|流れもあへぬ 紅葉なりけり|やまがはに かぜのかけたる しがらみは|ながれもあへぬ もみぢなりけり|やまがわに かぜのかけたる しがらみわ
+33|紀友則|ひさかたの 光のどけき 春の日に|しづ心なく 花の散るらむ|ひさかたの ひかりのどけき はるのひに|しづごころなく はなのちるらむ|ひさかたの ひかりのどけき はるのひに
+34|藤原興風|誰をかも 知る人にせむ 高砂の|松も昔の 友ならなくに|たれをかも しるひとにせむ たかさごの|まつもむかしの ともならなくに|たれおかも しるひとにせん たかさごの
+35|紀貫之|人はいさ 心も知らず ふるさとは|花ぞ昔の 香ににほひける|ひとはいさ こころもしらず ふるさとは|はなぞむかしの かににほひける|ひとわいさ こころもしらず ふるさとわ
+36|清原深養父|夏の夜は まだ宵ながら 明けぬるを|雲のいづこに 月宿るらむ|なつのよは まだよひながら あけぬるを|くものいづこに つきやどるらむ|なつのよわ まだよいながら あけぬるお
+37|文屋朝康|白露に 風の吹きしく 秋の野は|つらぬきとめぬ 玉ぞ散りける|しらつゆに かぜのふきしく あきののは|つらぬきとめぬ たまぞちりける|しらつゆに かぜのふきしく あきののわ
+38|右近|忘らるる 身をば思はず 誓ひてし|人の命の 惜しくもあるかな|わすらるる みをばおもはず ちかひてし|ひとのいのちの をしくもあるかな|わすらるる みおばおもわず ちかいてし
+39|参議等|浅茅生の 小野の篠原 しのぶれど|あまりてなどか 人の恋しき|あさぢふの をののしのはら しのぶれど|あまりてなどか ひとのこひしき|あさじうの おののしのはら しのぶれど
+40|平兼盛|忍ぶれど 色に出でにけり わが恋は|ものや思ふと 人の問ふまで|しのぶれど いろにいでにけり わがこひは|ものやおもふと ひとのとふまで|しのぶれど いろにいでにけり わがこいわ
+41|壬生忠見|恋すてふ わが名はまだき 立ちにけり|人知れずこそ 思ひそめしか|こひすてふ わがなはまだき たちにけり|ひとしれずこそ おもひそめしか|こいすちょう わがなわまだき たちにけり
+42|清原元輔|契りきな かたみに袖を しぼりつつ|末の松山 波越さじとは|ちぎりきな かたみにそでを しぼりつつ|すゑのまつやま なみこさじとは|ちぎりきな かたみにそでお しぼりつつ
+43|権中納言敦忠|逢ひ見ての 後の心に くらぶれば|昔はものを 思はざりけり|あひみての のちのこころに くらぶれば|むかしはものを おもはざりけり|あいみての のちのこころに くらぶれば
+44|中納言朝忠|逢ふことの 絶えてしなくは なかなかに|人をも身をも 恨みざらまし|あふことの たえてしなくは なかなかに|ひとをもみをも うらみざらまし|おおことの たえてしなくわ なかなかに
+45|謙徳公|あはれとも いふべき人は 思ほえで|身のいたづらに なりぬべきかな|あはれとも いふべきひとは おもほえで|みのいたづらに なりぬべきかな|あわれとも いうべきひとわ おもおえで
+46|曽禰好忠|由良の門を 渡る舟人 かぢを絶え|行方も知らぬ 恋の道かな|ゆらのとを わたるふなびと かぢをたえ|ゆくへもしらぬ こひのみちかな|ゆらのとお わたるふなびと かじおたえ
+47|恵慶法師|八重むぐら しげれる宿の さびしきに|人こそ見えね 秋は来にけり|やへむぐら しげれるやどの さびしきに|ひとこそみえね あきはきにけり|やえむぐら しげれるやどの さびしきに
+48|源重之|風をいたみ 岩打つ波の おのれのみ|くだけてものを 思ふころかな|かぜをいたみ いはうつなみの おのれのみ|くだけてものを おもふころかな|かぜおいたみ いわうつなみの おのれのみ
+49|大中臣能宣朝臣|みかきもり 衛士のたく火の 夜は燃え|昼は消えつつ ものをこそ思へ|みかきもり ゑじのたくひの よるはもえ|ひるはきえつつ ものをこそおもへ|みかきもり えじのたくひの よるわもえ
+50|藤原義孝|君がため 惜しからざりし 命さへ|長くもがなと 思ひけるかな|きみがため をしからざりし いのちさへ|ながくもがなと おもひけるかな|きみがため おしからざりし いのちさえ
+51|藤原実方朝臣|かくとだに えやはいぶきの さしも草|さしも知らじな 燃ゆる思ひを|かくとだに えやはいぶきの さしもぐさ|さしもしらじな もゆるおもひを|かくとだに えやわいぶきの さしもぐさ
+52|藤原道信朝臣|明けぬれば 暮るるものとは 知りながら|なほ恨めしき 朝ぼらけかな|あけぬれば くるるものとは しりながら|なほうらめしき あさぼらけかな|あけぬれば くるるものとわ しりながら
+53|右大将道綱母|嘆きつつ ひとり寝る夜の 明くる間は|いかに久しき ものとかは知る|なげきつつ ひとりぬるよの あくるまは|いかにひさしき ものとかはしる|なげきつつ ひとりぬるよの あくるまわ
+54|儀同三司母|忘れじの 行く末までは かたければ|今日を限りの 命ともがな|わすれじの ゆくすゑまでは かたければ|けふをかぎりの いのちともがな|わすれじの ゆくすえまでわ かたければ
+55|大納言公任|滝の音は 絶えて久しく なりぬれど|名こそ流れて なほ聞こえけれ|たきのおとは たえてひさしく なりぬれど|なこそながれて なほきこえけれ|たきのおとわ たえてひさしく なりぬれど
+56|和泉式部|あらざらむ この世のほかの 思ひ出に|いまひとたびの 逢ふこともがな|あらざらむ このよのほかの おもひでに|いまひとたびの あふこともがな|あらざらん このよのほかの おもいでに
+57|紫式部|めぐり逢ひて 見しやそれとも わかぬ間に|雲隠れにし 夜半の月かな|めぐりあひて みしやそれとも わかぬまに|くもがくれにし よはのつきかな|めぐりあいて みしやそれとも わかぬまに
+58|大弐三位|有馬山 猪名の笹原 風吹けば|いでそよ人を 忘れやはする|ありまやま ゐなのささはら かぜふけば|いでそよひとを わすれやはする|ありまやま いなのささはら かぜふけば
+59|赤染衛門|やすらはで 寝なましものを 小夜更けて|かたぶくまでの 月を見しかな|やすらはで ねなましものを さよふけて|かたぶくまでの つきをみしかな|やすらわで ねなましものお さよふけて
+60|小式部内侍|大江山 いく野の道の 遠ければ|まだふみも見ず 天の橋立|おほえやま いくののみちの とほければ|まだふみもみず あまのはしだて|おおえやま いくののみちの とおければ
+61|伊勢大輔|いにしへの 奈良の都の 八重桜|けふ九重に にほひぬるかな|いにしへの ならのみやこの やへざくら|けふここのへに にほひぬるかな|いにしえの ならのみやこの やえざくら
+62|清少納言|夜をこめて 鳥のそら音は はかるとも|よに逢坂の 関は許さじ|よをこめて とりのそらねは はかるとも|よにあふさかの せきはゆるさじ|よおこめて とりのそらねわ はかるとも
+63|左京大夫道雅|今はただ 思ひ絶えなむ とばかりを|人づてならで 言ふよしもがな|いまはただ おもひたえなむ とばかりを|ひとづてならで いふよしもがな|いまわただ おもいたえなん とばかりお
+64|権中納言定頼|朝ぼらけ 宇治の川霧 たえだえに|あらはれわたる 瀬々の網代木|あさぼらけ うぢのかはぎり たえだえに|あらはれわたる せぜのあじろぎ|あさぼらけ うじのかわぎり たえだえに
+65|相模|恨みわび ほさぬ袖だに あるものを|恋に朽ちなむ 名こそ惜しけれ|うらみわび ほさぬそでだに あるものを|こひにくちなむ なこそをしけれ|うらみわび ほさぬそでだに あるものお
+66|前大僧正行尊|もろともに あはれと思へ 山桜|花よりほかに 知る人もなし|もろともに あはれとおもへ やまざくら|はなよりほかに しるひともなし|もろともに あわれとおもえ やまざくら
+67|周防内侍|春の夜の 夢ばかりなる 手枕に|かひなく立たむ 名こそ惜しけれ|はるのよの ゆめばかりなる たまくらに|かひなくたたむ なこそをしけれ|はるのよの ゆめばかりなる たまくらに
+68|三条院|心にも あらでうき世に ながらへば|恋しかるべき 夜半の月かな|こころにも あらでうきよに ながらへば|こひしかるべき よはのつきかな|こころにも あらでうきよに ながらえば
+69|能因法師|嵐吹く 三室の山の もみぢ葉は|竜田の川の 錦なりけり|あらしふく みむろのやまの もみぢばは|たつたのかはの にしきなりけり|あらしふく みむろのやまの もみじばわ
+70|良暹法師|さびしさに 宿を立ち出でて ながむれば|いづこも同じ 秋の夕暮れ|さびしさに やどをたちいでて ながむれば|いづこもおなじ あきのゆふぐれ|さびしさに やどおたちいでて ながむれば
+71|大納言経信|夕されば 門田の稲葉 おとづれて|蘆のまろやに 秋風ぞ吹く|ゆふされば かどたのいなば おとづれて|あしのまろやに あきかぜぞふく|ゆうされば かどたのいなば おとずれて
+72|祐子内親王家紀伊|音に聞く 高師の浜の あだ波は|かけじや袖の 濡れもこそすれ|おとにきく たかしのはまの あだなみは|かけじやそでの ぬれもこそすれ|おとにきく たかしのはまの あだなみわ
+73|権中納言匡房|高砂の 尾の上の桜 咲きにけり|外山の霞 立たずもあらなむ|たかさごの をのへのさくら さきにけり|とやまのかすみ たたずもあらなむ|たかさごの おのえのさくら さきにけり
+74|源俊頼朝臣|憂かりける 人を初瀬の 山おろしよ|はげしかれとは 祈らぬものを|うかりける ひとをはつせの やまおろしよ|はげしかれとは いのらぬものを|うかりける ひとおはつせの やまおろしよ
+75|藤原基俊|契りおきし させもが露を 命にて|あはれ今年の 秋もいぬめり|ちぎりおきし させもがつゆを いのちにて|あはれことしの あきもいぬめり|ちぎりおきし させもがつゆお いのちにて
+76|法性寺入道前関白太政大臣|わたの原 漕ぎ出でて見れば 久方の|雲居にまがふ 沖つ白波|わたのはら こぎいでてみれば ひさかたの|くもゐにまがふ おきつしらなみ|わたのはら こぎいでてみれば ひさかたの
+77|崇徳院|瀬をはやみ 岩にせかるる 滝川の|われても末に 逢はむとぞ思ふ|せをはやみ いはにせかるる たきがはの|われてもすゑに あはむとぞおもふ|せおはやみ いわにせかるる たきがわの
+78|源兼昌|淡路島 かよふ千鳥の 鳴く声に|幾夜寝覚めぬ 須磨の関守|あはぢしま かよふちどりの なくこゑに|いくよねざめぬ すまのせきもり|あわじしま かようちどりの なくこえに
+79|左京大夫顕輔|秋風に たなびく雲の 絶え間より|もれ出づる月の 影のさやけさ|あきかぜに たなびくくもの たえまより|もれいづるつきの かげのさやけさ|あきかぜに たなびくくもの たえまより
+80|待賢門院堀河|長からむ 心も知らず 黒髪の|乱れて今朝は ものをこそ思へ|ながからむ こころもしらず くろかみの|みだれてけさは ものをこそおもへ|ながからん こころもしらず くろかみの
+81|後徳大寺左大臣|ほととぎす 鳴きつる方を ながむれば|ただ有明の 月ぞ残れる|ほととぎす なきつるかたを ながむれば|ただありあけの つきぞのこれる|ほととぎす なきつるかたお ながむれば
+82|道因法師|思ひわび さても命は あるものを|憂きに堪へぬは 涙なりけり|おもひわび さてもいのちは あるものを|うきにたへぬは なみだなりけり|おもいわび さてもいのちわ あるものお
+83|皇太后宮大夫俊成|世の中よ 道こそなけれ 思ひ入る|山の奥にも 鹿ぞ鳴くなる|よのなかよ みちこそなけれ おもひいる|やまのおくにも しかぞなくなる|よのなかよ みちこそなけれ おもいいる
+84|藤原清輔朝臣|ながらへば またこのごろや しのばれむ|憂しと見し世ぞ 今は恋しき|ながらへば またこのごろや しのばれむ|うしとみしよぞ いまはこひしき|ながらえば またこのごろや しのばれん
+85|俊恵法師|夜もすがら もの思ふころは 明けやらで|閨のひまさへ つれなかりけり|よもすがら ものおもふころは あけやらで|ねやのひまさへ つれなかりけり|よもすがら ものおもうころわ あけやらで
+86|西行法師|嘆けとて 月やはものを 思はする|かこち顔なる わが涙かな|なげけとて つきやはものを おもはする|かこちがほなる わがなみだかな|なげけとて つきやわものお おもわする
+87|寂蓮法師|村雨の 露もまだひぬ 真木の葉に|霧立ちのぼる 秋の夕暮れ|むらさめの つゆもまだひぬ まきのはに|きりたちのぼる あきのゆふぐれ|むらさめの つゆもまだひぬ まきのはに
+88|皇嘉門院別当|難波江の 蘆のかりねの ひとよゆゑ|みをつくしてや 恋ひわたるべき|なにはえの あしのかりねの ひとよゆゑ|みをつくしてや こひわたるべき|なにわえの あしのかりねの ひとよゆえ
+89|式子内親王|玉の緒よ 絶えなば絶えね ながらへば|忍ぶることの 弱りもぞする|たまのをよ たえなばたえね ながらへば|しのぶることの よわりもぞする|たまのおよ たえなばたえね ながらえば
+90|殷富門院大輔|見せばやな 雄島のあまの 袖だにも|濡れにぞ濡れし 色は変はらず|みせばやな をじまのあまの そでだにも|ぬれにぞぬれし いろはかはらず|みせばやな おじまのあまの そでだにも
+91|後京極摂政前太政大臣|きりぎりす 鳴くや霜夜の さむしろに|衣かたしき ひとりかも寝む|きりぎりす なくやしもよの さむしろに|ころもかたしき ひとりかもねむ|きりぎりす なくやしもよの さむしろに
+92|二条院讃岐|わが袖は 潮干に見えぬ 沖の石の|人こそ知らね 乾く間もなし|わがそでは しほひにみえぬ おきのいしの|ひとこそしらね かわくまもなし|わがそでわ しおひにみえぬ おきのいしの
+93|鎌倉右大臣|世の中は 常にもがもな 渚漕ぐ|あまの小舟の 綱手かなしも|よのなかは つねにもがもな なぎさこぐ|あまのをぶねの つなでかなしも|よのなかわ つねにもがもな なぎさこぐ
+94|参議雅経|み吉野の 山の秋風 小夜更けて|ふるさと寒く 衣打つなり|みよしのの やまのあきかぜ さよふけて|ふるさとさむく ころもうつなり|みよしのの やまのあきかぜ さよふけて
+95|前大僧正慈円|おほけなく 憂き世の民に おほふかな|わが立つ杣に 墨染の袖|おほけなく うきよのたみに おほふかな|わがたつそまに すみぞめのそで|おおけなく うきよのたみに おおうかな
+96|入道前太政大臣|花さそふ 嵐の庭の 雪ならで|ふりゆくものは わが身なりけり|はなさそふ あらしのにはの ゆきならで|ふりゆくものは わがみなりけり|はなさそう あらしのにわの ゆきならで
+97|権中納言定家|来ぬ人を まつほの浦の 夕なぎに|焼くや藻塩の 身もこがれつつ|こぬひとを まつほのうらの ゆふなぎに|やくやもしほの みもこがれつつ|こぬひとお まつおのうらの ゆうなぎに
+98|従二位家隆|風そよぐ ならの小川の 夕暮れは|みそぎぞ夏の しるしなりける|かぜそよぐ ならのをがはの ゆふぐれは|みそぎぞなつの しるしなりける|かぜそよぐ ならのおがわの ゆうぐれわ
+99|後鳥羽院|人もをし 人も恨めし あぢきなく|世を思ふゆゑに もの思ふ身は|ひともをし ひともうらめし あぢきなく|よをおもふゆゑに ものおもふみは|ひともおし ひともうらめし あじきなく
+100|順徳院|ももしきや 古き軒端の しのぶにも|なほあまりある 昔なりけり|ももしきや ふるきのきばの しのぶにも|なほあまりある むかしなりけり|ももしきや ふるきのきばの しのぶにも
+`;
+
+const POEMS = [];
+POEM_SRC.trim().split('\n').forEach(line => {
+  const [no, author, kami, shimo, kamiKana, shimoKana, kamiYomi] = line.split('|');
+  POEMS[+no] = { no: +no, author, kami, shimo, kamiKana, shimoKana, kamiYomi,
+    kanaFlat: kamiKana.replace(/\s/g, ''), yomiFlat: kamiYomi.replace(/\s/g, '') };
+});
+const ALL_CARDS = Array.from({ length: 100 }, (_, i) => i + 1);
+
+// ===== 決まり字 =====
+// unread: 未読(まだ読まれていない)札の集合。その中で一意に決まる最短の長さを返す。
+function kimariLen(no, unread) {
+  const y = POEMS[no].yomiFlat;
+  let L = 1;
+  for (const o of unread) {
+    if (o === no || o === 0) continue;
+    const z = POEMS[o].yomiFlat;
+    let k = 0;
+    while (k < y.length && y[k] === z[k]) k++;
+    if (k + 1 > L) L = k + 1;
+  }
+  return L;
+}
+function kimariStr(no, unread) {
+  const L = kimariLen(no, unread);
+  return POEMS[no].kanaFlat.slice(0, L);
+}
+const STD_KIMARI = {};
+ALL_CARDS.forEach(n => { STD_KIMARI[n] = kimariStr(n, ALL_CARDS); });
+// 友札: 同じ(決まり字−1)文字で始まる未読札
+function friendsOf(no, unread) {
+  const L = kimariLen(no, unread);
+  if (L <= 1) return [];
+  const p = POEMS[no].yomiFlat.slice(0, L - 1);
+  return [...unread].filter(o => o !== no && o !== 0 && POEMS[o].yomiFlat.startsWith(p));
+}
+
+// ===== 共通ユーティリティ =====
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const opp = s => (s === 'N' ? 'F' : 'N');
+const fmtT = t => {
+  if (t == null || isNaN(t)) return '--:--';
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
+};
+const fmtMs = x => (x == null || isNaN(x) ? '—' : `${x >= 0 ? '+' : ''}${Math.round(x * 1000)}ms`);
+const mean = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+const sigmoid = x => 1 / (1 + Math.exp(-x));
+const logit = p => Math.log(p / (1 - p));
+
+// ===== 盤面 =====
+// スロットキー "N:段:列"  段 0=上段(中央寄り) 1=中段 2=下段(自分寄り)
+// 列 0-5=その選手から見て左、6-11=右
+const ROWS = 3, COLS = 12;
+const ROW_NAMES = ['上段', '中段', '下段'];
+const slotKey = (side, row, col) => `${side}:${row}:${col}`;
+const parseSlot = k => { const [side, r, c] = k.split(':'); return { side, row: +r, col: +c }; };
+const lrOf = col => (col < 6 ? 'L' : 'R');
+const SIDE_NAME = { N: '手前', F: '奥' };
+
+function invertBoard(board) {
+  const pos = {};
+  for (const k in board) if (board[k] != null) pos[board[k]] = k;
+  return pos;
+}
+function countSides(board) {
+  const c = { N: 0, F: 0 };
+  for (const k in board) if (board[k] != null) c[k[0]]++;
+  return c;
+}
+
+// ===== 試合の再生(読みイベントを順に適用) =====
+function replay(match) {
+  const board = { ...(match.layout || {}) };
+  const readSet = new Set();
+  const steps = [];
+  let winner = null, winnerAt = null;
+  const reads = match.reads || [];
+  reads.forEach((r, i) => {
+    const before = { ...board };
+    const pos = invertBoard(board);
+    const unread = new Set(ALL_CARDS.filter(n => !readSet.has(n)));
+    const c = r.card;
+    const st = { i, read: r, before, warnings: [], sends: [], moves: [] };
+    st.isJo = c === 0;
+    if (c > 0) {
+      st.kimariLen = kimariLen(c, unread);
+      st.kimari = POEMS[c].kanaFlat.slice(0, st.kimariLen);
+      st.friends = friendsOf(c, unread);
+      if (readSet.has(c)) st.warnings.push('この札はすでに読まれています');
+    }
+    const slot = c > 0 ? pos[c] : null;
+    st.onField = !!slot;
+    st.slot = slot ? parseSlot(slot) : null;
+    st.fieldSide = slot ? slot[0] : null;
+    const need = { N: 0, F: 0 };
+    if (r.taker) {
+      if (!st.onField) st.warnings.push(c == null ? '札が未確定です' : '空札なので取りは記録できません');
+      else {
+        const t = r.taker, s = st.slot;
+        const own = s.side === t;
+        // 取った人から見た左右(敵陣は左右が反転する)
+        const lr = own ? lrOf(s.col) : (lrOf(s.col) === 'L' ? 'R' : 'L');
+        st.take = { side: t, own, lr, row: s.row, area: (own ? 'own' : 'enemy') + lr };
+        delete board[slot];
+        if (!own) need[t]++;
+      }
+    }
+    st.faults = [];
+    for (const p of ['N', 'F']) if (r.fault && r.fault[p]) {
+      st.faults.push({ side: p, kind: st.onField ? '出札' : '空札' });
+      need[opp(p)]++;
+    }
+    st.need = need;
+    st.boardAfterTake = { ...board };
+    // 送り・並べ替え
+    for (const op of r.ops || []) {
+      const p2 = invertBoard(board);
+      const from = p2[op.card];
+      if (!from) { st.warnings.push(`${STD_KIMARI[op.card]} が盤上にありません`); continue; }
+      if (board[op.to] != null) { st.warnings.push(`移動先が埋まっています`); continue; }
+      const fs = from[0], ts = op.to[0];
+      const snap = { ...board };
+      delete board[from];
+      board[op.to] = op.card;
+      if (fs !== ts) st.sends.push({ card: op.card, from: fs, to: ts, fromSlot: from, toSlot: op.to, boardBefore: snap, unread: new Set([...unread].filter(n => n !== c)) });
+      else st.moves.push({ card: op.card, from, to: op.to });
+    }
+    const done = { N: 0, F: 0 };
+    st.sends.forEach(s => done[s.from]++);
+    for (const p of ['N', 'F']) if (need[p] !== done[p] && !winner) {
+      if (done[p] < need[p]) st.warnings.push(`${SIDE_NAME[p]}の送りが${need[p] - done[p]}枚足りません`);
+      else st.warnings.push(`${SIDE_NAME[p]}の送りが想定より${done[p] - need[p]}枚多いです`);
+    }
+    st.after = { ...board };
+    st.count = countSides(board);
+    if (!winner && reads.length && Object.keys(match.layout || {}).length) {
+      if (st.count.N === 0) { winner = 'N'; winnerAt = i; }
+      else if (st.count.F === 0) { winner = 'F'; winnerAt = i; }
+    }
+    if (c > 0) readSet.add(c);
+    st.readSet = new Set(readSet);
+    steps.push(st);
+  });
+  const w = match.result?.winner || winner;
+  return { steps, final: { ...board }, count: countSides(board), winner: w, winnerAt, autoWinner: winner };
+}
+
+// 決まり字時刻(未入力なら推定: 上の句開始 + 0.2秒×文字数)
+function kimariTime(r, st) {
+  if (r.kimariT != null) return { t: r.kimariT, est: false };
+  if (r.t == null || !st || !st.kimariLen) return { t: null, est: true };
+  return { t: r.t + 0.2 * st.kimariLen + 0.1, est: true };
+}
+
+// ===== 集計 =====
+function emptySideStats() {
+  return { take: { ownL: 0, ownR: 0, enemyL: 0, enemyR: 0 }, total: 0, faults: { 空札: 0, 出札: 0 }, sent: [], byLen: {}, lostByLen: {},
+    react: [], rows: { own: [0, 0, 0], enemy: [0, 0, 0] } };
+}
+function matchStats(match, rp = replay(match)) {
+  const S = { N: emptySideStats(), F: emptySideStats() };
+  const series = [];
+  const initCount = countSides(match.layout || {});
+  series.push({ i: -1, N: initCount.N, F: initCount.F });
+  rp.steps.forEach(st => {
+    const r = st.read;
+    if (st.take) {
+      const s = S[st.take.side];
+      s.take[st.take.area]++; s.total++;
+      s.rows[st.take.own ? 'own' : 'enemy'][st.take.row]++;
+      const L = st.kimariLen || 0;
+      s.byLen[L] = (s.byLen[L] || 0) + 1;
+      const o = S[opp(st.take.side)];
+      o.lostByLen[L] = (o.lostByLen[L] || 0) + 1;
+    }
+    st.faults.forEach(f => S[f.side].faults[f.kind]++);
+    st.sends.forEach(sd => S[sd.from].sent.push({ card: sd.card, i: st.i }));
+    const kt = kimariTime(r, st);
+    for (const p of ['N', 'F']) {
+      const rc = r.react?.[p];
+      if (rc && (rc.move != null || rc.touch != null) && kt.t != null) {
+        S[p].react.push({ i: st.i, card: r.card, len: st.kimariLen, move: rc.move != null ? rc.move - kt.t : null,
+          touch: rc.touch != null ? rc.touch - kt.t : null, est: kt.est, took: st.take?.side === p, onField: st.onField,
+          own: st.onField ? st.fieldSide === p : null });
+      }
+    }
+    series.push({ i: st.i, N: st.count.N, F: st.count.F });
+  });
+  return { S, series, rp };
+}
+
+// ===== データ保存(IndexedDB) =====
+const DB = {
+  db: null,
+  async open() {
+    if (this.db) return this.db;
+    this.db = await new Promise((res, rej) => {
+      const q = indexedDB.open('karuta-video-app', 1);
+      q.onupgradeneeded = () => {
+        const d = q.result;
+        d.createObjectStore('players', { keyPath: 'id' });
+        d.createObjectStore('matches', { keyPath: 'id' });
+      };
+      q.onsuccess = () => res(q.result);
+      q.onerror = () => rej(q.error);
+    });
+    return this.db;
+  },
+  async all(store) {
+    const d = await this.open();
+    return new Promise((res, rej) => {
+      const q = d.transaction(store).objectStore(store).getAll();
+      q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+    });
+  },
+  async put(store, obj) {
+    const d = await this.open();
+    return new Promise((res, rej) => {
+      const tx = d.transaction(store, 'readwrite');
+      tx.objectStore(store).put(obj);
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    });
+  },
+  async del(store, id) {
+    const d = await this.open();
+    return new Promise((res, rej) => {
+      const tx = d.transaction(store, 'readwrite');
+      tx.objectStore(store).delete(id);
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    });
+  }
+};
+
+// ===== 勝率シミュレーション(送り札評価) =====
+// 標準の友札(決まり字の最後の1字だけが違う札)
+const STD_FRIENDS = {};
+ALL_CARDS.forEach(n => {
+  const L = STD_KIMARI[n].length;
+  STD_FRIENDS[n] = L <= 1 ? [] : ALL_CARDS.filter(o => o !== n && POEMS[o].yomiFlat.startsWith(POEMS[n].yomiFlat.slice(0, L - 1)));
+});
+const DEFAULT_SIM = { home: 0.7, rowAdj: [-0.1, 0, 0.15], hand: 0.1, split: -0.35, fault: 0.02, skill: 0, sims: 300 };
+
+function makeRng(seed) {
+  let s = seed >>> 0 || 1;
+  return () => { s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; };
+}
+// 自陣の札を持ち主が取る確率
+function ownerProb(card, slot, pos, unread, P, hands) {
+  const { side, row, col } = typeof slot === 'string' ? parseSlot(slot) : slot;
+  let x = P.home + P.rowAdj[row] + (side === 'N' ? P.skill : -P.skill);
+  const h = hands[side] || 'R';
+  if ((h === 'R' && col >= 6) || (h === 'L' && col < 6)) x += P.hand;
+  for (const f of STD_FRIENDS[card]) {
+    if (unread.has(f) && pos[f] && pos[f][0] !== side) { x += P.split; break; }
+  }
+  return sigmoid(x);
+}
+function freeSlots(board, side, preferRow = 0) {
+  const out = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const k = slotKey(side, r, c);
+    if (board[k] == null) out.push(k);
+  }
+  out.sort((a, b) => Math.abs(+a.split(':')[1] - preferRow) - Math.abs(+b.split(':')[1] - preferRow));
+  return out;
+}
+// 1試合をランダムにシミュレーション。勝った側を返す
+function simulateOnce(board0, unread0, P, hands, rng) {
+  const board = { ...board0 };
+  const pos = invertBoard(board);
+  const unread = new Set(unread0);
+  const cnt = countSides(board);
+  const order = [...unread];
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  const send = (from) => {
+    if (cnt[from] === 0) return;
+    const to = opp(from);
+    const dest = freeSlots(board, to, 0);
+    const k = dest[Math.floor(rng() * Math.min(dest.length, 6))];
+    // 送り方針: 受け取った側が守りにくい札(友札が分かれる等)を優先
+    let best = null, bp = 2;
+    for (const cc in pos) {
+      if (pos[cc][0] !== from) continue;
+      const tmp = pos[cc]; pos[cc] = k;
+      const p = ownerProb(+cc, k, pos, unread, P, hands) + rng() * 0.08;
+      pos[cc] = tmp;
+      if (p < bp) { bp = p; best = +cc; }
+    }
+    if (best == null) return;
+    delete board[pos[best]]; board[k] = best; pos[best] = k;
+    cnt[from]--; cnt[to]++;
+  };
+  for (const c of order) {
+    if (cnt.N === 0) return 'N';
+    if (cnt.F === 0) return 'F';
+    unread.delete(c);
+    if (pos[c]) {
+      const s = pos[c][0];
+      const p = ownerProb(c, pos[c], pos, unread, P, hands);
+      const taker = rng() < p ? s : opp(s);
+      delete board[pos[c]]; delete pos[c]; cnt[s]--;
+      let n = taker !== s ? 1 : 0;
+      if (rng() < P.fault) n++;
+      for (let k = 0; k < n; k++) send(taker);
+    } else {
+      for (const p of ['N', 'F']) if (rng() < P.fault / 2) send(opp(p));
+    }
+  }
+  if (cnt.N === 0) return 'N';
+  if (cnt.F === 0) return 'F';
+  return cnt.N <= cnt.F ? 'N' : 'F';
+}
+function winProb(board, unread, P, hands, side = 'N', n = P.sims, seed = 1) {
+  const rng = makeRng(seed);
+  const c = countSides(board);
+  if (c.N === 0) return side === 'N' ? 1 : 0;
+  if (c.F === 0) return side === 'F' ? 1 : 0;
+  let w = 0;
+  for (let i = 0; i < n; i++) if (simulateOnce(board, unread, P, hands, rng) === side) w++;
+  return w / n;
+}
+
+// ===== 音声解析 =====
+const Audio16 = { data: null, sr: 16000, key: null };
+
+async function decodeVideoAudio(file, onStatus) {
+  const key = file.name + ':' + file.size;
+  if (Audio16.key === key && Audio16.data) return Audio16;
+  onStatus?.('動画から音声を読み込み中…(大きな動画は時間がかかります)');
+  const buf = await file.arrayBuffer();
+  onStatus?.('音声をデコード中…');
+  const ctx = new OfflineAudioContext(1, 16000, 16000);
+  const ab = await ctx.decodeAudioData(buf);
+  let data;
+  if (ab.sampleRate === 16000) {
+    data = new Float32Array(ab.length);
+    for (let ch = 0; ch < ab.numberOfChannels; ch++) {
+      const d = ab.getChannelData(ch);
+      for (let i = 0; i < d.length; i++) data[i] += d[i] / ab.numberOfChannels;
+    }
+  } else {
+    // 念のため16kHzへリサンプリング
+    const off = new OfflineAudioContext(1, Math.ceil(ab.duration * 16000), 16000);
+    const src = off.createBufferSource(); src.buffer = ab; src.connect(off.destination); src.start();
+    const rb = await off.startRendering();
+    data = rb.getChannelData(0).slice();
+  }
+  Object.assign(Audio16, { data, sr: 16000, key });
+  return Audio16;
+}
+
+// 20msごとの音量(dB)
+function energyDb(data, sr, hop = 0.02) {
+  const n = Math.floor(sr * hop), len = Math.floor(data.length / n);
+  const out = new Float32Array(len);
+  for (let i = 0; i < len; i++) {
+    let s = 0;
+    for (let j = i * n; j < (i + 1) * n; j++) s += data[j] * data[j];
+    out[i] = 10 * Math.log10(s / n + 1e-10);
+  }
+  return out;
+}
+function percentile(arr, p) {
+  const a = Float32Array.from(arr).sort();
+  return a[Math.floor(clamp(p, 0, 1) * (a.length - 1))];
+}
+// 発声区間を検出。sensitivity 0..1 (大きいほど小さな音も拾う)
+function detectVoiced(db, hop = 0.02, sensitivity = 0.5) {
+  const floor = percentile(db, 0.2), top = percentile(db, 0.97);
+  const th = floor + (top - floor) * (0.45 - 0.3 * sensitivity);
+  const thLow = th - 3;
+  const segs = [];
+  let on = false, start = 0;
+  for (let i = 0; i < db.length; i++) {
+    if (!on && db[i] > th) { on = true; start = i; }
+    else if (on && db[i] < thLow) { on = false; segs.push([start * hop, i * hop]); }
+  }
+  if (on) segs.push([start * hop, db.length * hop]);
+  // 短い隙間をつなぎ、短すぎる音を除く
+  const merged = [];
+  for (const s of segs) {
+    const last = merged[merged.length - 1];
+    if (last && s[0] - last[1] < 0.3) last[1] = s[1];
+    else merged.push([...s]);
+  }
+  return merged.filter(s => s[1] - s[0] >= 0.25);
+}
+// 読みのまとまり(前の下の句+次の上の句)にグループ化
+function groupUnits(segs, gapMax = 1.8, minDur = 1.5) {
+  const units = [];
+  for (const s of segs) {
+    const u = units[units.length - 1];
+    if (u && s[0] - u.e < gapMax) { u.e = s[1]; u.subs.push(s); }
+    else units.push({ s: s[0], e: s[1], subs: [s] });
+  }
+  return units.filter(u => u.e - u.s >= minDur);
+}
+// 上の句の開始を推定:まとまりの中で一番長い隙間の直後(下の句→余韻→上の句)
+function estimateOnset(u) {
+  if (u.subs.length < 2) return u.s;
+  let best = 0, at = u.s;
+  for (let i = 1; i < u.subs.length; i++) {
+    const g = u.subs[i][0] - u.subs[i - 1][1];
+    if (g > best && u.subs[i][0] - u.s > 2) { best = g; at = u.subs[i][0]; }
+  }
+  return best >= 0.4 ? at : u.s;
+}
+
+// ===== 文字列マッチング =====
+function toHira(s) { return s.replace(/[ァ-ヶ]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60)); }
+function normJa(s) { return toHira(String(s).normalize('NFKC')).replace(/[^ぁ-ゟ一-鿿々]/g, ''); }
+function bigrams(s) { const b = new Set(); for (let i = 0; i < s.length - 1; i++) b.add(s.slice(i, i + 2)); if (s.length === 1) b.add(s); return b; }
+const FORMS = [];
+POEMS.forEach(p => {
+  if (!p) return;
+  const f = [normJa(p.kami), normJa(p.kamiKana), normJa(p.kamiYomi)];
+  FORMS[p.no] = { kami: f.map(bigrams), head: f.map(x => x.slice(0, 6)).map(bigrams), shimo: [normJa(p.shimo), normJa(p.shimoKana)].map(bigrams) };
+});
+function recall(formSet, textSet) {
+  if (!formSet.size) return 0;
+  let h = 0; formSet.forEach(b => { if (textSet.has(b)) h++; });
+  return h / formSet.size;
+}
+// テキストに対する各札の一致度 [[no, score], ...] 降順
+function scoreCards(text, candidates) {
+  const t = bigrams(normJa(text));
+  if (!t.size) return [];
+  const out = [];
+  for (const no of candidates) {
+    const F = FORMS[no];
+    const k = Math.max(...F.kami.map(f => recall(f, t)));
+    const h = Math.max(...F.head.map(f => recall(f, t)));
+    out.push([no, +(0.7 * k + 0.3 * h).toFixed(3)]);
+  }
+  return out.sort((a, b) => b[1] - a[1]);
+}
+
+// ===== Whisper(ブラウザ内音声認識) =====
+const ASR = { pipe: null, model: null };
+async function loadASR(model, onStatus) {
+  if (ASR.pipe && ASR.model === model) return ASR.pipe;
+  onStatus?.('音声認識ライブラリを読み込み中…');
+  const T = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
+  T.env.allowLocalModels = false;
+  let device = 'wasm', dtype = 'q8';
+  if (navigator.gpu) {
+    try { if (await navigator.gpu.requestAdapter()) { device = 'webgpu'; dtype = { encoder_model: 'fp32', decoder_model_merged: 'q4' }; } } catch (e) {}
+  }
+  const files = {};
+  const progress_callback = (p) => {
+    if (p.status === 'progress' && p.file) {
+      files[p.file] = p;
+      const tot = Object.values(files).reduce((a, x) => a + (x.total || 0), 0);
+      const ld = Object.values(files).reduce((a, x) => a + (x.loaded || 0), 0);
+      onStatus?.(`モデルをダウンロード中… ${(ld / 1e6).toFixed(0)} / ${(tot / 1e6).toFixed(0)} MB(初回のみ)`);
+    }
+  };
+  try {
+    ASR.pipe = await T.pipeline('automatic-speech-recognition', model, { device, dtype, progress_callback });
+  } catch (e) {
+    console.warn('WebGPU失敗→WASMで再試行', e);
+    ASR.pipe = await T.pipeline('automatic-speech-recognition', model, { device: 'wasm', dtype: 'q8', progress_callback });
+    device = 'wasm';
+  }
+  ASR.model = model; ASR.device = device;
+  return ASR.pipe;
+}
+async function transcribe(pipe, data, sr, s, e) {
+  const a = Math.max(0, Math.floor((s - 0.3) * sr)), b = Math.min(data.length, Math.floor((e + 0.3) * sr));
+  const seg = data.slice(a, b);
+  const out = await pipe(seg, { language: 'japanese', task: 'transcribe', return_timestamps: true, chunk_length_s: 30, stride_length_s: 5 });
+  const off = a / sr;
+  const chunks = (out.chunks || []).map(c => ({ text: c.text, s: (c.timestamp?.[0] ?? 0) + off, e: (c.timestamp?.[1] ?? (b - a) / sr) + off }));
+  return { text: out.text || '', chunks };
+}
+
+// ===== アプリ状態 =====
+const App = {
+  players: [], matches: [],
+  view: 'home', matchId: null, tab: 'edit', playerId: null,
+  sel: -1,            // 選択中の読み(-1 = 初期配置)
+  pick: null,         // 盤面で選択中の札
+  videoFile: null, videoURL: null,
+  cutMode: false,
+};
+const pById = id => App.players.find(p => p.id === id);
+const pName = id => pById(id)?.name || '(未登録)';
+const curMatch = () => App.matches.find(m => m.id === App.matchId);
+const sideName = (m, s) => (m?.players?.[s] ? pName(m.players[s]) : SIDE_NAME[s]);
+
+let saveTimer = null;
+function saveMatch(m = curMatch(), immediate = false) {
+  if (!m) return;
+  m.updated = Date.now();
+  clearTimeout(saveTimer);
+  const f = () => DB.put('matches', m).catch(e => toast('保存に失敗しました: ' + e.message));
+  immediate ? f() : (saveTimer = setTimeout(f, 400));
+}
+function toast(msg, ms = 2400) {
+  const d = document.createElement('div');
+  d.className = 'toast'; d.textContent = msg;
+  document.body.appendChild(d);
+  setTimeout(() => d.remove(), ms);
+}
+const tipEl = () => $('#tip') || Object.assign(document.body.appendChild(document.createElement('div')), { id: 'tip', className: 'tip' });
+function showTip(e, html) { const t = tipEl(); t.innerHTML = html; t.style.display = 'block'; t.style.left = (e.clientX + 12) + 'px'; t.style.top = (e.clientY + 12) + 'px'; }
+function hideTip() { const t = $('#tip'); if (t) t.style.display = 'none'; }
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest?.('[data-tip]');
+  if (el) showTip(e, el.dataset.tip); else hideTip();
+});
+
+// ===== 画面切り替え =====
+function go(view, extra = {}) {
+  if (view !== 'match') stopVideo();
+  Object.assign(App, { view }, extra);
+  render();
+}
+function render() {
+  $$('header.app nav button').forEach(b => b.classList.toggle('on', b.dataset.go === App.view || (App.view === 'match' && b.dataset.go === 'home')));
+  const main = $('main');
+  if (App.view === 'home') main.innerHTML = homeHTML();
+  else if (App.view === 'players') main.innerHTML = playersHTML();
+  else if (App.view === 'match') { renderMatch(); return; }
+  bindCommon(main);
+}
+function bindCommon(root) {
+  root.querySelectorAll('[data-act]').forEach(el => {
+    const ev = el.tagName === 'SELECT' || el.type === 'range' || el.type === 'checkbox' || el.type === 'number' || el.type === 'file' ? 'change' : 'click';
+    el.addEventListener(ev, e => { e.stopPropagation(); ACT[el.dataset.act]?.(el, e); });
+  });
+}
+const ACT = {};
+
+// ===== 試合一覧 =====
+function homeHTML() {
+  const ms = [...App.matches].sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.created - a.created);
+  const opts = App.players.map(p => `<option value="${p.id}">${esc(p.name)}${p.team ? '(' + esc(p.team) + ')' : ''}</option>`).join('');
+  return `
+  <div class="stack">
+    <div class="card-box">
+      <h2 style="margin-bottom:10px">新しい試合</h2>
+      ${App.players.length < 2 ? `<div class="infobox" style="margin-bottom:10px">先に「選手」から選手を登録しておくと、選手ごとの集計ができます。未登録のままでも試合は作れます。</div>` : ''}
+      <div class="row">
+        <label>日付 <input type="date" id="nm-date" value="${new Date().toISOString().slice(0, 10)}"></label>
+        <label>大会・練習名 <input type="text" id="nm-title" placeholder="例:部内練習 / ○○大会 3回戦" style="width:240px"></label>
+        <label><span class="dot n"></span>手前 <select id="nm-n"><option value="">(未登録)</option>${opts}</select></label>
+        <label><span class="dot f"></span>奥 <select id="nm-f"><option value="">(未登録)</option>${opts}</select></label>
+        <button class="primary" data-act="newMatch">作成</button>
+      </div>
+      <div class="muted small" style="margin-top:6px">「手前」は動画で手前(画面下)に座っている選手です。</div>
+    </div>
+    <div>
+      <div class="row" style="margin-bottom:8px"><h2>試合一覧</h2><span class="muted">${ms.length}試合</span></div>
+      ${ms.length ? `<div class="match-list">${ms.map(matchItemHTML).join('')}</div>` : `<div class="card-box muted">まだ試合がありません。</div>`}
+    </div>
+  </div>`;
+}
+function matchItemHTML(m) {
+  const rp = replay(m);
+  const w = rp.winner;
+  const diff = w ? rp.count[opp(w)] : null;
+  return `<div class="match-item" data-act="openMatch" data-id="${m.id}">
+    <div class="muted">${esc(m.date || '')}</div>
+    <div><div>${esc(m.title || '(無題)')}</div>
+      <div class="vs"><span class="dot n"></span><span class="${w === 'N' ? 'w' : ''}">${esc(sideName(m, 'N'))}</span> 対 <span class="dot f"></span><span class="${w === 'F' ? 'w' : ''}">${esc(sideName(m, 'F'))}</span></div></div>
+    <div class="small muted">${(m.reads || []).length}読み ${w ? `/ ${esc(sideName(m, w))} ${diff}枚差勝ち` : ''}</div>
+    <button class="small danger" data-act="delMatch" data-id="${m.id}">削除</button>
+  </div>`;
+}
+ACT.newMatch = async () => {
+  const m = {
+    id: uid(), date: $('#nm-date').value, title: $('#nm-title').value.trim(),
+    players: { N: $('#nm-n').value || null, F: $('#nm-f').value || null },
+    video: null, fps: 30, layout: {}, reads: [], audio: null,
+    cut: { pre: 1.5, post: 2.5, fromShimo: false, jo: true },
+    result: { winner: null }, sim: null, created: Date.now(), updated: Date.now()
+  };
+  App.matches.push(m);
+  await DB.put('matches', m);
+  go('match', { matchId: m.id, tab: 'edit', sel: -1 });
+};
+ACT.openMatch = el => go('match', { matchId: el.dataset.id, tab: 'edit', sel: -1, pick: null });
+ACT.delMatch = async el => {
+  const m = App.matches.find(x => x.id === el.dataset.id);
+  if (!confirm(`「${m.title || '(無題)'}」を削除しますか?元に戻せません。`)) return;
+  App.matches = App.matches.filter(x => x !== m);
+  await DB.del('matches', m.id);
+  render();
+};
+
+// ===== 選手 =====
+function playersHTML() {
+  const ps = [...App.players].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  const sel = pById(App.playerId);
+  return `<div class="grid2" style="grid-template-columns: 340px 1fr">
+    <div class="stack">
+      <div class="card-box">
+        <h2 style="margin-bottom:10px">選手を登録</h2>
+        <div class="stack">
+          <input type="text" id="np-name" placeholder="名前" style="width:100%">
+          <div class="row"><input type="text" id="np-team" placeholder="所属" style="flex:1"><input type="text" id="np-rank" placeholder="段位・級" style="width:90px"></div>
+          <div class="row"><label>利き手 <select id="np-hand"><option value="R">右</option><option value="L">左</option></select></label><span class="spacer"></span><button class="primary" data-act="addPlayer">登録</button></div>
+        </div>
+      </div>
+      <div class="card-box" style="padding:6px">
+        ${ps.length ? ps.map(p => `<div class="row" style="padding:6px 8px;border-radius:6px;cursor:pointer;${p.id === App.playerId ? 'background:var(--accent-soft)' : ''}" data-act="selPlayer" data-id="${p.id}">
+          <b>${esc(p.name)}</b><span class="muted small">${esc(p.team || '')} ${esc(p.rank || '')}</span><span class="spacer"></span>
+          <span class="muted small">${App.matches.filter(m => m.players?.N === p.id || m.players?.F === p.id).length}試合</span></div>`).join('') : '<div class="muted" style="padding:8px">まだ選手がいません</div>'}
+      </div>
+    </div>
+    <div>${sel ? playerStatsHTML(sel) : '<div class="card-box muted">左の一覧から選手を選ぶと、全試合を合わせた集計を表示します。</div>'}</div>
+  </div>`;
+}
+ACT.addPlayer = async () => {
+  const name = $('#np-name').value.trim();
+  if (!name) return toast('名前を入力してください');
+  const p = { id: uid(), name, team: $('#np-team').value.trim(), rank: $('#np-rank').value.trim(), hand: $('#np-hand').value, created: Date.now() };
+  App.players.push(p);
+  await DB.put('players', p);
+  App.playerId = p.id;
+  render();
+};
+ACT.selPlayer = el => { App.playerId = el.dataset.id; render(); };
+ACT.delPlayer = async el => {
+  const p = pById(el.dataset.id);
+  if (!confirm(`${p.name} を削除しますか?(試合記録は残り、選手名が「未登録」になります)`)) return;
+  App.players = App.players.filter(x => x !== p);
+  await DB.del('players', p.id);
+  App.playerId = null; render();
+};
+ACT.editPlayer = async el => {
+  const p = pById(el.dataset.id);
+  const name = prompt('名前', p.name); if (name == null) return;
+  const team = prompt('所属', p.team || ''); if (team == null) return;
+  const rank = prompt('段位・級', p.rank || ''); if (rank == null) return;
+  const hand = prompt('利き手(右=R / 左=L)', p.hand || 'R'); if (hand == null) return;
+  Object.assign(p, { name: name.trim() || p.name, team: team.trim(), rank: rank.trim(), hand: /l|左/i.test(hand) ? 'L' : 'R' });
+  await DB.put('players', p); render();
+};
+
+// 選手ごとの全試合集計
+function playerAgg(pid) {
+  const A = { n: 0, win: 0, lose: 0, take: { ownL: 0, ownR: 0, enemyL: 0, enemyR: 0 }, lost: { ownL: 0, ownR: 0, enemyL: 0, enemyR: 0 }, total: 0,
+    faults: 0, sent: {}, react: [], perMatch: [], weakCards: {}, strongCards: {}, diff: [] };
+  const ms = App.matches.filter(m => m.players?.N === pid || m.players?.F === pid).sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  for (const m of ms) {
+    const side = m.players.N === pid ? 'N' : 'F';
+    const { S, rp } = matchStats(m);
+    const me = S[side], op = S[opp(side)];
+    A.n++;
+    if (rp.winner === side) { A.win++; A.diff.push(rp.count[opp(side)]); }
+    else if (rp.winner) { A.lose++; A.diff.push(-rp.count[side]); }
+    for (const k in me.take) { A.take[k] += me.take[k]; }
+    // 相手に取られた札を自分視点のエリアに換算(相手の敵陣=自分の自陣、左右反転)
+    const flip = { ownL: 'enemyR', ownR: 'enemyL', enemyL: 'ownR', enemyR: 'ownL' };
+    for (const k in op.take) A.lost[flip[k]] += op.take[k];
+    A.total += me.total;
+    A.faults += me.faults.空札 + me.faults.出札;
+    me.sent.forEach(s => { A.sent[s.card] = (A.sent[s.card] || 0) + 1; });
+    me.react.forEach(r => A.react.push({ ...r, date: m.date }));
+    const mv = me.react.map(r => r.move).filter(x => x != null);
+    A.perMatch.push({ date: m.date, title: m.title, id: m.id, move: mean(mv), n: mv.length, side, won: rp.winner === side });
+    rp.steps.forEach(st => {
+      if (!st.take || !st.onField) return;
+      if (st.fieldSide === side) {
+        if (st.take.side !== side) A.weakCards[st.read.card] = (A.weakCards[st.read.card] || 0) + 1;
+      } else if (st.take.side === side) A.strongCards[st.read.card] = (A.strongCards[st.read.card] || 0) + 1;
+    });
+  }
+  return A;
+}
+function topCards(obj, n = 8) {
+  return Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, n).map(([c, k]) => `<span class="chip" data-tip="${esc(POEMS[c].kami)} / ${esc(POEMS[c].author)}">${STD_KIMARI[c]} ×${k}</span>`).join('') || '<span class="muted small">—</span>';
+}
+function playerStatsHTML(p) {
+  const A = playerAgg(p.id);
+  const pct = (a, b) => (a + b ? Math.round(a / (a + b) * 100) + '%' : '—');
+  const byLen = {};
+  A.react.forEach(r => { if (r.move == null || !r.len) return; (byLen[r.len] = byLen[r.len] || []).push(r.move); });
+  return `<div class="stack">
+    <div class="card-box">
+      <div class="row"><h2>${esc(p.name)}</h2><span class="muted">${esc(p.team || '')} ${esc(p.rank || '')} ・ 利き手:${p.hand === 'L' ? '左' : '右'}</span><span class="spacer"></span>
+        <button class="small" data-act="editPlayer" data-id="${p.id}">編集</button><button class="small danger" data-act="delPlayer" data-id="${p.id}">削除</button></div>
+      <div class="row" style="margin-top:10px;gap:24px">
+        <div><div class="muted small">試合</div><b style="font-size:22px">${A.n}</b></div>
+        <div><div class="muted small">勝敗</div><b style="font-size:22px">${A.win}勝 ${A.lose}敗</b></div>
+        <div><div class="muted small">平均枚数差</div><b style="font-size:22px">${A.diff.length ? (mean(A.diff) >= 0 ? '+' : '') + mean(A.diff).toFixed(1) : '—'}</b></div>
+        <div><div class="muted small">お手つき/試合</div><b style="font-size:22px">${A.n ? (A.faults / A.n).toFixed(1) : '—'}</b></div>
+        <div><div class="muted small">平均反応(動き出し)</div><b style="font-size:22px">${fmtMs(mean(A.react.map(r => r.move).filter(x => x != null)))}</b></div>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card-box"><h3>エリア別の取り合い(取った / 取られた)</h3>
+        <div class="area-cap">敵陣</div>
+        <div class="area4">
+          <div class="enemy"><span class="lab">左</span><b>${A.take.enemyL} / ${A.lost.enemyL}</b><span class="lab">取得率 ${pct(A.take.enemyL, A.lost.enemyL)}</span></div>
+          <div class="enemy"><span class="lab">右</span><b>${A.take.enemyR} / ${A.lost.enemyR}</b><span class="lab">取得率 ${pct(A.take.enemyR, A.lost.enemyR)}</span></div>
+          <div class="own"><span class="lab">左</span><b>${A.take.ownL} / ${A.lost.ownL}</b><span class="lab">取得率 ${pct(A.take.ownL, A.lost.ownL)}</span></div>
+          <div class="own"><span class="lab">右</span><b>${A.take.ownR} / ${A.lost.ownR}</b><span class="lab">取得率 ${pct(A.take.ownR, A.lost.ownR)}</span></div>
+        </div>
+        <div class="area-cap">自陣(左右は本人から見た向き)</div>
+      </div>
+      <div class="card-box stack">
+        <div><h3>よく送る札</h3><div class="chips">${topCards(A.sent)}</div></div>
+        <div><h3>苦手な札(自陣で取られた回数)</h3><div class="chips">${topCards(A.weakCards)}</div></div>
+        <div><h3>得意な札(敵陣から取った回数)</h3><div class="chips">${topCards(A.strongCards)}</div></div>
+      </div>
+      <div class="card-box"><h3>決まり字の長さ別 反応時間(動き出し)</h3>
+        ${Object.keys(byLen).length ? `<table class="t"><tr><th>決まり字</th><th class="num">回数</th><th class="num">平均</th></tr>
+        ${Object.keys(byLen).sort().map(L => `<tr><td>${L}字</td><td class="num">${byLen[L].length}</td><td class="num">${fmtMs(mean(byLen[L]))}</td></tr>`).join('')}</table>` : '<div class="muted small">反応時間の記録がまだありません(編集タブで動き出しを記録すると表示されます)</div>'}
+      </div>
+      <div class="card-box"><h3>反応時間の推移(試合ごとの平均)</h3>
+        ${lineChart([{ key: 'n', name: '動き出し平均', color: 'var(--near)', pts: A.perMatch.filter(x => x.move != null).map((x, i) => ({ x: i, y: x.move * 1000, tip: `${esc(x.date)} ${esc(x.title || '')}<br>${Math.round(x.move * 1000)}ms (${x.n}回)` })) }], { w: 420, h: 220, yLabel: 'ms', xLabels: A.perMatch.filter(x => x.move != null).map(x => (x.date || '').slice(5)) })}
+      </div>
+    </div>
+    <div class="card-box"><h3>試合一覧</h3>
+      <table class="t"><tr><th>日付</th><th>試合</th><th>陣</th><th>結果</th></tr>
+      ${A.perMatch.slice().reverse().map(x => `<tr style="cursor:pointer" data-act="openMatch" data-id="${x.id}"><td>${esc(x.date)}</td><td>${esc(x.title || '(無題)')}</td><td>${SIDE_NAME[x.side]}</td><td>${x.won ? '勝ち' : ''}</td></tr>`).join('')}</table>
+    </div>
+  </div>`;
+}
+
+// ===== グラフ(SVG) =====
+// series: [{name, color, pts:[{x,y,tip}]}]
+function lineChart(series, o = {}) {
+  const W = o.w || 560, H = o.h || 200, pl = 44, pr = 14, pt = 12, pb = 26;
+  const all = series.flatMap(s => s.pts);
+  if (!all.length) return '<div class="muted small">データがありません</div>';
+  const xmin = o.xmin ?? Math.min(...all.map(p => p.x)), xmax = o.xmax ?? Math.max(...all.map(p => p.x), xmin + 1);
+  let ymin = o.ymin ?? Math.min(...all.map(p => p.y)), ymax = o.ymax ?? Math.max(...all.map(p => p.y));
+  if (ymin === ymax) { ymin -= 1; ymax += 1; }
+  const X = x => pl + (x - xmin) / (xmax - xmin || 1) * (W - pl - pr);
+  const Y = y => pt + (1 - (y - ymin) / (ymax - ymin)) * (H - pt - pb);
+  const ticks = o.yTicks || niceTicks(ymin, ymax, 4);
+  let g = ticks.map(v => `<line class="grid" x1="${pl}" x2="${W - pr}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${pl - 6}" y="${Y(v) + 4}" text-anchor="end">${o.yFmt ? o.yFmt(v) : v}</text>`).join('');
+  if (o.refY != null) g += `<line x1="${pl}" x2="${W - pr}" y1="${Y(o.refY)}" y2="${Y(o.refY)}" stroke="var(--line-2)" stroke-dasharray="4 3"/>`;
+  if (o.xLabels) {
+    const step = Math.ceil(o.xLabels.length / 10);
+    g += o.xLabels.map((l, i) => i % step === 0 ? `<text x="${X(i)}" y="${H - 8}" text-anchor="middle">${esc(l)}</text>` : '').join('');
+  } else {
+    niceTicks(xmin, xmax, 8).forEach(v => { g += `<text x="${X(v)}" y="${H - 8}" text-anchor="middle">${o.xFmt ? o.xFmt(v) : v}</text>`; });
+  }
+  const lines = series.map(s => {
+    const d = s.pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join('');
+    const pts = s.pts.map(p => `<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="${o.dots === false ? 0 : 3.5}" fill="${s.color}" stroke="var(--surface)" stroke-width="2"/><circle cx="${X(p.x)}" cy="${Y(p.y)}" r="9" fill="transparent" data-tip="${esc(p.tip || '')}"/>`).join('');
+    return `${o.noLine ? '' : `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"/>`}${pts}`;
+  }).join('');
+  const legend = series.length > 1 ? `<div class="legend">${series.map(s => `<span><span class="dot" style="background:${s.color}"></span>${esc(s.name)}</span>`).join('')}</div>` : '';
+  return `${legend}<svg class="chart" viewBox="0 0 ${W} ${H}"><line class="axis" x1="${pl}" x2="${W - pr}" y1="${H - pb}" y2="${H - pb}"/>${g}${lines}${o.yLabel ? `<text x="4" y="10">${esc(o.yLabel)}</text>` : ''}</svg>`;
+}
+function niceTicks(a, b, n) {
+  const span = b - a, raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+  const step = [1, 2, 5, 10].map(k => k * mag).find(s => span / s <= n) || 10 * mag;
+  const out = [];
+  for (let v = Math.ceil(a / step) * step; v <= b + 1e-9; v += step) out.push(+v.toFixed(6));
+  return out;
+}
+
+// ===== 札を選ぶダイアログ =====
+function openPicker({ title, used = new Set(), cands = [], allowJo = false, allowNone = false, onPick }) {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  const candSet = new Set(cands.map(c => c[0]));
+  bg.innerHTML = `<div class="modal">
+    <div class="mh"><b>${esc(title)}</b><input type="search" id="pk-q" placeholder="決まり字・かな・作者・番号で検索" style="flex:1" autofocus>
+      ${allowJo ? '<button data-v="0">序歌</button>' : ''}${allowNone ? '<button data-v="null">未確定にする</button>' : ''}<button data-v="close">閉じる</button></div>
+    <div class="mb">
+      ${cands.length ? `<div style="margin-bottom:10px"><div class="muted small" style="margin-bottom:4px">音声認識の候補</div><div class="cand">${cands.slice(0, 5).map(([n, s]) => `<button data-v="${n}" class="${n === 0 ? '' : ''}">${n === 0 ? '序歌' : STD_KIMARI[n]} <span class="muted small">${Math.round(s * 100)}%</span></button>`).join('')}</div></div>` : ''}
+      <div class="picker-grid"></div>
+    </div></div>`;
+  document.body.appendChild(bg);
+  const grid = bg.querySelector('.picker-grid');
+  const draw = q => {
+    const nq = normJa(q);
+    const list = ALL_CARDS.filter(n => {
+      if (!q) return true;
+      const p = POEMS[n];
+      return String(n) === q.trim() || p.kanaFlat.startsWith(nq) || p.yomiFlat.startsWith(nq) || p.kami.includes(q) || p.author.includes(q) || normJa(p.kamiKana).includes(nq) || normJa(p.shimoKana).includes(nq);
+    });
+    // 一字決まり→六字の順(競技の覚え方に合わせる)
+    const pre = n => (q && (POEMS[n].kanaFlat.startsWith(nq) || POEMS[n].yomiFlat.startsWith(nq) || String(n) === q.trim()) ? 0 : 1);
+    list.sort((a, b) => pre(a) - pre(b) || STD_KIMARI[a].length - STD_KIMARI[b].length || POEMS[a].yomiFlat.localeCompare(POEMS[b].yomiFlat, 'ja'));
+    grid.innerHTML = list.map(n => `<button data-v="${n}" class="${used.has(n) ? 'used' : ''} ${candSet.has(n) ? 'cand-hit' : ''}" title="${esc(POEMS[n].kami)}\n${esc(POEMS[n].shimo)}"><b>${STD_KIMARI[n]}</b><span>${esc(POEMS[n].shimoKana.slice(0, 9))}</span><span>${n}. ${esc(POEMS[n].author)}</span></button>`).join('');
+  };
+  draw('');
+  const q = bg.querySelector('#pk-q');
+  q.addEventListener('input', () => draw(q.value));
+  q.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { const b = grid.querySelector('button:not(.used)') || grid.querySelector('button'); b?.click(); }
+    if (e.key === 'Escape') close();
+  });
+  const close = () => bg.remove();
+  bg.addEventListener('click', e => {
+    if (e.target === bg) return close();
+    const b = e.target.closest('button[data-v]');
+    if (!b) return;
+    const v = b.dataset.v;
+    if (v === 'close') return close();
+    close();
+    onPick(v === 'null' ? null : +v);
+  });
+  setTimeout(() => q.focus(), 30);
+}
+
+// ===== データの書き出し・読み込み =====
+ACT.exportAll = () => {
+  const blob = new Blob([JSON.stringify({ app: 'karuta-video-app', version: 1, exported: new Date().toISOString(), players: App.players, matches: App.matches }, null, 1)], { type: 'application/json' });
+  downloadBlob(blob, `karuta-data-${new Date().toISOString().slice(0, 10)}.json`);
+};
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+async function importFile(file) {
+  try {
+    const d = JSON.parse(await file.text());
+    if (!Array.isArray(d.players) || !Array.isArray(d.matches)) throw new Error('形式が違います');
+    if (!confirm(`選手 ${d.players.length}人、試合 ${d.matches.length}件を読み込みます。同じIDのデータは上書きされます。よろしいですか?`)) return;
+    for (const p of d.players) { await DB.put('players', p); }
+    for (const m of d.matches) { await DB.put('matches', m); }
+    App.players = await DB.all('players'); App.matches = await DB.all('matches');
+    toast('読み込みました'); render();
+  } catch (e) { alert('読み込みに失敗しました: ' + e.message); }
+}
+
+// ===== 試合画面 =====
+let RP = null; // 直近のreplay結果
+function refreshRP() { RP = replay(curMatch()); return RP; }
+
+function renderMatch() {
+  const m = curMatch();
+  if (!m) return go('home');
+  refreshRP();
+  const opts = s => `<option value="">(未登録)</option>` + App.players.map(p => `<option value="${p.id}" ${m.players?.[s] === p.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  $('main').innerHTML = `
+    <div class="match-head">
+      <button data-act="goHome">← 一覧</button>
+      <div><div class="muted small">${esc(m.date || '')}</div><b style="font-size:16px;cursor:pointer" data-act="renameMatch" title="クリックで名前を変更">${esc(m.title || '(無題)')}</b></div>
+      <label class="small"><span class="dot n"></span>手前 <select data-act="setPlayer" data-side="N">${opts('N')}</select></label>
+      <label class="small"><span class="dot f"></span>奥 <select data-act="setPlayer" data-side="F">${opts('F')}</select></label>
+      <span class="spacer"></span>
+      <div class="tabs">${[['edit', '編集'], ['sum', '集計'], ['ana', '分析']].map(([k, l]) => `<button data-act="tab" data-tab="${k}" class="${App.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    </div>
+    <div id="tab-body"></div>`;
+  bindCommon($('.match-head'));
+  const body = $('#tab-body');
+  if (App.tab === 'edit') renderEdit(body);
+  else if (App.tab === 'sum') { body.innerHTML = summaryHTML(m); bindCommon(body); }
+  else { body.innerHTML = analysisHTML(m); bindCommon(body); }
+}
+ACT.goHome = () => go('home');
+ACT.tab = el => { saveVideoPos(); App.tab = el.dataset.tab; renderMatch(); };
+ACT.renameMatch = () => {
+  const m = curMatch();
+  const t = prompt('試合名', m.title || ''); if (t == null) return;
+  const d = prompt('日付(YYYY-MM-DD)', m.date || ''); if (d == null) return;
+  m.title = t.trim(); m.date = d.trim(); saveMatch(m, true); renderMatch();
+};
+ACT.setPlayer = el => {
+  const m = curMatch(); m.players[el.dataset.side] = el.value || null; saveMatch(m, true);
+  if (App.tab !== 'edit') renderMatch(); else drawBoard();
+};
+
+// ===== 編集タブ =====
+const vid = () => $('#vid');
+let lastVideoPos = 0;
+function saveVideoPos() { const v = vid(); if (v) lastVideoPos = v.currentTime; }
+function stopVideo() { const v = vid(); if (v) { v.pause(); lastVideoPos = v.currentTime; } }
+
+function renderEdit(body) {
+  const m = curMatch();
+  const needFile = !App.videoFile || (m.video && App.videoFile.name !== m.video.name);
+  body.innerHTML = `
+  <div class="edit-grid">
+    <div class="stack">
+      <div class="video-wrap" id="vw">
+        ${needFile ? `<div class="placeholder">
+            <div style="font-size:15px;margin-bottom:8px">${m.video ? `動画ファイル「${esc(m.video.name)}」を選択してください` : '試合の動画ファイルを選択してください'}</div>
+            <div class="muted small" style="margin-bottom:12px">動画はこのパソコンの中だけで処理され、外部には送信されません</div>
+            <label class="primary" style="display:inline-block;padding:7px 14px;border-radius:6px;background:var(--accent);color:var(--accent-ink);cursor:pointer">動画を選ぶ<input type="file" accept="video/*,audio/*" data-act="openVideo" hidden></label>
+          </div>` : `<video id="vid" src="${App.videoURL}" playsinline preload="auto"></video><div class="badge" id="vbadge"></div>`}
+      </div>
+      <div class="transport">
+        <button data-act="play" id="btn-play" style="min-width:64px">▶ 再生</button>
+        <button data-act="seek" data-d="-1" title="1秒戻る (Shift+←)">−1s</button>
+        <button data-act="frame" data-d="-1" title="1コマ戻る (←)">◀ 1コマ</button>
+        <button data-act="frame" data-d="1" title="1コマ進む (→)">1コマ ▶</button>
+        <button data-act="seek" data-d="1" title="1秒進む (Shift+→)">+1s</button>
+        <select data-act="rate" title="再生速度">${[0.25, 0.5, 1, 1.5, 2].map(r => `<option value="${r}" ${r === 1 ? 'selected' : ''}>${r}倍</option>`).join('')}</select>
+        <select data-act="fps" title="動画のフレームレート(1コマ送りの幅)">${[30, 60, 120, 240].map(f => `<option value="${f}" ${m.fps === f ? 'selected' : ''}>${f}fps</option>`).join('')}</select>
+        <span class="time" id="tnow">0:00.0</span>
+        <span class="spacer"></span>
+        <button data-act="cutPlay" id="btn-cut" class="${App.cutMode ? 'on' : ''}">カット再生 ${App.cutMode ? 'ON' : 'OFF'}</button>
+        ${needFile ? '' : `<label class="small muted" style="cursor:pointer">動画を変更<input type="file" accept="video/*,audio/*" data-act="openVideo" hidden></label>`}
+      </div>
+      <div>
+        <div class="tl-label"><span>全体(クリックで移動)</span><span id="tl-info"></span></div>
+        <canvas class="tl" id="tl-all" height="46"></canvas>
+        <div class="tl-label"><span>拡大(前後8秒)</span><span class="muted">━ 上の句開始 ┅ 決まり字 ▲ 動き出し ● 到達</span></div>
+        <canvas class="tl" id="tl-zoom" height="70"></canvas>
+      </div>
+      ${audioPanelHTML(m)}
+      ${cutPanelHTML(m)}
+      <details class="panel"><summary>キーボード操作</summary><div class="body small" style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px">
+        <span><kbd>Space</kbd></span><span>再生 / 一時停止</span>
+        <span><kbd>←</kbd><kbd>→</kbd></span><span>1コマ移動(<kbd>Shift</kbd>で1秒)</span>
+        <span><kbd>↑</kbd><kbd>↓</kbd></span><span>前 / 次の読みを選ぶ</span>
+        <span><kbd>R</kbd></span><span>今の位置に読み(上の句の開始)を追加</span>
+        <span><kbd>K</kbd></span><span>選択中の読みの決まり字時刻を今の位置に設定</span>
+        <span><kbd>1</kbd> / <kbd>2</kbd></span><span>手前の選手の 動き出し / 札に到達</span>
+        <span><kbd>9</kbd> / <kbd>0</kbd></span><span>奥の選手の 動き出し / 札に到達</span>
+        <span><kbd>Esc</kbd></span><span>札の選択を解除</span>
+        <span><kbd>Delete</kbd></span><span>(初期配置で)選択中の札を取り除く</span>
+      </div></details>
+    </div>
+    <div class="stack">
+      <div id="board"></div>
+      <div id="editor" class="editor"></div>
+      <div>
+        <div class="row" style="margin-bottom:6px"><h3 style="margin:0">読みの一覧</h3><span class="muted small" id="reads-count"></span><span class="spacer"></span>
+          <button class="small" data-act="selLayout">初期配置</button>
+          <button class="small primary" data-act="addRead">＋ 今の位置に読みを追加 (R)</button></div>
+        <div class="reads" id="reads"></div>
+      </div>
+    </div>
+  </div>`;
+  bindCommon(body);
+  const v = vid();
+  if (v) {
+    v.addEventListener('loadedmetadata', () => {
+      m.video = { ...(m.video || {}), name: App.videoFile.name, size: App.videoFile.size, duration: v.duration };
+      saveMatch(m);
+      if (lastVideoPos) v.currentTime = lastVideoPos;
+      drawTimelines();
+    });
+    v.addEventListener('play', () => { $('#btn-play').textContent = '❚❚ 停止'; tick(); });
+    v.addEventListener('pause', () => { $('#btn-play').textContent = '▶ 再生'; updateTimeUI(); });
+    v.addEventListener('seeked', updateTimeUI);
+    v.addEventListener('click', () => ACT.play());
+  }
+  setupTimelineClicks();
+  $('#board').addEventListener('click', onBoardClick);
+  drawBoard(); drawEditor(); drawReads(); drawTimelines(); updateTimeUI();
+}
+function tick() {
+  const v = vid();
+  if (!v || v.paused) return;
+  if (App.cutMode) cutPlaybackStep(v);
+  updateTimeUI();
+  requestAnimationFrame(tick);
+}
+let lastTLDraw = 0;
+function updateTimeUI() {
+  const v = vid(); if (!v) return;
+  $('#tnow').textContent = fmtT(v.currentTime);
+  const now = performance.now();
+  if (now - lastTLDraw > 60) { lastTLDraw = now; drawTimelines(); }
+  const b = $('#vbadge');
+  if (b) {
+    const m = curMatch();
+    const i = (m.reads || []).findLastIndex(r => r.t != null && r.t <= v.currentTime + 0.05);
+    const r = m.reads[i];
+    b.textContent = r ? `#${i + 1} ${r.card === 0 ? '序歌' : r.card ? STD_KIMARI[r.card] : '札未確定'}` : '';
+    b.style.display = r ? '' : 'none';
+  }
+}
+ACT.openVideo = el => {
+  const f = el.files[0]; if (!f) return;
+  const m = curMatch();
+  if (m.video && m.video.name !== f.name && !confirm(`この試合は「${m.video.name}」で記録されています。別の動画「${f.name}」を使いますか?`)) return;
+  if (App.videoURL) URL.revokeObjectURL(App.videoURL);
+  App.videoFile = f; App.videoURL = URL.createObjectURL(f);
+  lastVideoPos = 0;
+  renderMatch();
+};
+ACT.play = () => { const v = vid(); if (!v) return; v.paused ? v.play() : v.pause(); };
+ACT.seek = el => { const v = vid(); if (v) v.currentTime = clamp(v.currentTime + (+el.dataset.d), 0, v.duration || 1e9); };
+ACT.frame = el => { const v = vid(); if (!v) return; v.pause(); v.currentTime = clamp(v.currentTime + (+el.dataset.d) / (curMatch().fps || 30), 0, v.duration || 1e9); };
+ACT.rate = el => { const v = vid(); if (v) v.playbackRate = +el.value; };
+ACT.fps = el => { const m = curMatch(); m.fps = +el.value; saveMatch(m); };
+function seekTo(t) { const v = vid(); if (v && t != null) v.currentTime = clamp(t, 0, v.duration || 1e9); }
+const nowT = () => vid()?.currentTime ?? null;
+
+// ===== 盤面 =====
+function boardView() {
+  const m = curMatch();
+  if (App.sel < 0 || !RP.steps[App.sel]) return { mode: 'layout', board: m.layout || {}, unread: new Set(ALL_CARDS), ghost: null, readCard: null, moved: new Set(), friends: [] };
+  const st = RP.steps[App.sel];
+  const unread = new Set(ALL_CARDS.filter(n => !st.readSet.has(n)));
+  return {
+    mode: 'read', st, board: st.after, unread,
+    ghost: st.take ? { slot: slotKey(st.slot.side, st.slot.row, st.slot.col), card: st.read.card } : null,
+    readCard: st.onField && !st.take ? st.read.card : null,
+    moved: new Set([...st.sends.map(s => s.card), ...st.moves.map(s => s.card)]),
+    friends: st.friends || []
+  };
+}
+function drawBoard() {
+  const m = curMatch(), V = boardView();
+  const cnt = countSides(V.board);
+  const cell = (side, row, col) => {
+    const k = slotKey(side, row, col), c = V.board[k];
+    if (c != null) {
+      const cls = ['fuda', App.pick === c ? 'sel' : '', V.readCard === c ? 'read' : '', V.moved.has(c) ? 'moved' : '', V.friends.includes(c) ? 'friend' : ''].join(' ');
+      return `<div class="slot" data-slot="${k}"><div class="${cls}" data-card="${c}" data-tip="${c}. ${esc(POEMS[c].kami)}<br>${esc(POEMS[c].shimo)}">${kimariStr(c, V.unread)}<span class="no">${c}</span></div></div>`;
+    }
+    if (V.ghost && V.ghost.slot === k) return `<div class="slot"><div class="fuda ghost" data-tip="取られた札">${STD_KIMARI[V.ghost.card]}</div></div>`;
+    return `<div class="slot empty ${App.pick != null ? 'target' : ''}" data-slot="${k}"></div>`;
+  };
+  const terr = side => {
+    let h = '';
+    const rows = side === 'F' ? [2, 1, 0] : [0, 1, 2];
+    for (const r of rows) {
+      for (let sc = 0; sc < 12; sc++) {
+        if (sc === 6) h += '<div class="slot gap"></div>';
+        const col = side === 'F' ? 11 - sc : sc;
+        h += cell(side, r, col);
+      }
+    }
+    return `<div class="terr">${h}</div>`;
+  };
+  const title = V.mode === 'layout' ? '初期配置' : `#${App.sel + 1} の後の盤面`;
+  $('#board').innerHTML = `<div class="board">
+    <div class="who side-F" style="color:var(--far)"><span><span class="dot f"></span>奥${m.players?.F ? ':' + esc(sideName(m, 'F')) : ''}</span><span class="cnt">${cnt.F}枚</span></div>
+    <div class="side-F">${terr('F')}</div>
+    <div class="midline">${title}${App.pick != null ? ` ・ 「${STD_KIMARI[App.pick]}」を選択中:移動先をクリック` : ''}</div>
+    <div class="side-N">${terr('N')}</div>
+    <div class="who side-N" style="color:var(--near)"><span><span class="dot n"></span>手前${m.players?.N ? ':' + esc(sideName(m, 'N')) : ''}</span><span class="cnt">${cnt.N}枚</span></div>
+  </div>`;
+}
+function onBoardClick(e) {
+  const m = curMatch(), V = boardView();
+  const f = e.target.closest('.fuda:not(.ghost)');
+  const s = e.target.closest('.slot.empty');
+  if (f) {
+    const c = +f.dataset.card;
+    App.pick = App.pick === c ? null : c;
+    drawBoard(); drawEditor(); return;
+  }
+  if (!s) return;
+  const k = s.dataset.slot;
+  if (App.pick != null) {
+    const c = App.pick; App.pick = null;
+    if (V.mode === 'layout') {
+      const from = invertBoard(m.layout)[c];
+      if (from) delete m.layout[from];
+      m.layout[k] = c;
+    } else {
+      const r = m.reads[App.sel];
+      r.ops = r.ops || [];
+      r.ops.push({ card: c, to: k });
+    }
+    saveMatch(m); refreshRP(); drawBoard(); drawEditor(); drawReads();
+    return;
+  }
+  if (V.mode === 'layout') {
+    const used = new Set(Object.values(m.layout));
+    openPicker({ title: `${SIDE_NAME[k[0]]}陣 ${ROW_NAMES[parseSlot(k).row]} に置く札`, used, onPick: c => {
+      if (c == null || c === 0) return;
+      const from = invertBoard(m.layout)[c];
+      if (from) delete m.layout[from];
+      m.layout[k] = c;
+      saveMatch(m); refreshRP(); drawBoard(); drawEditor(); drawReads();
+    } });
+  }
+}
+
+// ===== 読みの編集パネル =====
+function drawEditor() {
+  const m = curMatch(), el = $('#editor');
+  if (App.sel < 0 || !m.reads[App.sel]) {
+    const c = countSides(m.layout || {});
+    const jo = m.reads.find(r => r.card === 0);
+    el.innerHTML = `<div class="title"><span class="kim">初期配置</span><span class="muted">手前 ${c.N}枚 / 奥 ${c.F}枚(各25枚が基本)</span></div>
+      <div class="stack" style="margin-top:10px">
+        <div class="small">序歌が読まれている場面で盤面を確認しながら、空いているマスをクリックして札を置きます。置いた札をクリック→別のマスをクリックで移動できます。</div>
+        <div class="row">
+          <button data-act="gotoJo" ${jo && jo.t != null ? '' : 'disabled'}>序歌の場面へ移動${jo ? '' : '(序歌が未検出)'}</button>
+          ${App.pick != null ? `<button data-act="removePick" class="danger">「${STD_KIMARI[App.pick]}」を取り除く</button>` : ''}
+          <span class="spacer"></span>
+          <button class="small danger" data-act="clearLayout">配置をすべて消す</button>
+        </div>
+        <div class="muted small">※ 映像からの札の自動認識は、撮影条件に合わせた学習データが必要なため今後の対応予定です。今は手入力で修正する形になります。</div>
+      </div>`;
+    bindCommon(el); return;
+  }
+  const r = m.reads[App.sel], st = RP.steps[App.sel];
+  const P = r.card > 0 ? POEMS[r.card] : r.card === 0 ? POEMS[0] : null;
+  const kt = kimariTime(r, st);
+  const place = st.onField ? `${SIDE_NAME[st.fieldSide]}陣 ${lrOf(st.slot.col) === 'L' ? '左' : '右'}${ROW_NAMES[st.slot.row]}` : '';
+  const asrText = r.asr ? `<div class="muted small" style="margin-top:4px">認識結果:「${esc(r.asr)}」</div>` : '';
+  const reactRow = s => {
+    const rc = r.react?.[s] || {};
+    const d = x => (x != null && kt.t != null ? fmtMs(x - kt.t) : '—');
+    return `<div class="row small"><span class="dot ${s.toLowerCase()}"></span>${esc(sideName(m, s))}
+      <button class="small" data-act="markReact" data-side="${s}" data-k="move">動き出し ${rc.move != null ? fmtT(rc.move) : '記録'}</button><b>${d(rc.move)}</b>
+      <button class="small" data-act="markReact" data-side="${s}" data-k="touch">到達 ${rc.touch != null ? fmtT(rc.touch) : '記録'}</button><b>${d(rc.touch)}</b>
+      ${rc.move != null || rc.touch != null ? `<button class="small ghost" data-act="clearReact" data-side="${s}">×</button>` : ''}</div>`;
+  };
+  const needTxt = ['N', 'F'].filter(s => st.need[s]).map(s => `${esc(sideName(m, s))}が${st.need[s]}枚送る`).join('、');
+  el.innerHTML = `
+    <div class="title">
+      <span class="muted">#${App.sel + 1}</span>
+      <span class="kim">${r.card === 0 ? '序歌' : r.card ? (st.kimari || STD_KIMARI[r.card]) : '札が未確定'}</span>
+      ${r.card > 0 ? `<span class="pill">${st.kimariLen}字決まり</span>` : ''}
+      ${r.card > 0 ? (st.onField ? `<span class="pill ${st.fieldSide.toLowerCase()}">出札:${place}</span>` : '<span class="pill">空札</span>') : ''}
+      <span class="spacer"></span>
+      <button class="small" data-act="pickCard">札を選ぶ</button>
+    </div>
+    ${P ? `<div class="poem">${esc(P.kami)} / ${esc(P.shimo)} <span class="muted">(${esc(P.author)})</span></div>` : ''}
+    ${r.cand?.length ? `<div class="cand" style="margin-top:6px"><span class="muted small">候補:</span>${r.cand.slice(0, 4).map(([n, s]) => `<button class="small ${n === r.card ? 'on' : ''}" data-act="setCard" data-v="${n}">${n === 0 ? '序歌' : STD_KIMARI[n]} ${Math.round(s * 100)}%</button>`).join('')}</div>` : ''}
+    ${asrText}
+    ${st.friends?.length ? `<div class="small" style="margin-top:4px">友札(未読):${st.friends.map(f => `<span class="chip">${STD_KIMARI[f]}</span>`).join(' ')}</div>` : ''}
+    <div class="grid">
+      <label>取り</label>
+      <div class="row">${['N', 'F'].map(s => `<button class="${r.taker === s ? 'on ' + s.toLowerCase() : ''}" data-act="setTaker" data-v="${s}" ${st.onField ? '' : 'disabled'}><span class="dot ${s.toLowerCase()}"></span>${esc(sideName(m, s))}</button>`).join('')}
+        <button class="${!r.taker ? 'on' : ''}" data-act="setTaker" data-v="">なし</button></div>
+      <label>お手つき</label>
+      <div class="row">${['N', 'F'].map(s => `<button class="${r.fault?.[s] ? 'on ' + s.toLowerCase() : ''}" data-act="toggleFault" data-v="${s}"><span class="dot ${s.toLowerCase()}"></span>${esc(sideName(m, s))}</button>`).join('')}</div>
+      <label>送り・移動</label>
+      <div>
+        ${needTxt ? `<div class="small">必要な送り:${needTxt}。<span class="muted">盤面で送る札をクリック→相手陣の置き場所をクリック</span></div>` : '<div class="muted small">送りは不要です(並べ替えは盤面で札→空きマスの順にクリック)</div>'}
+        ${(r.ops || []).length ? `<div class="chips" style="margin-top:4px">${r.ops.map((o, i) => {
+          const sd = st.sends.find(s => s.card === o.card);
+          return `<span class="chip">${sd ? `送り ${SIDE_NAME[sd.from]}→${SIDE_NAME[sd.to]}` : '移動'}:${STD_KIMARI[o.card]} <a href="#" data-act="delOp" data-i="${i}" style="color:var(--bad);text-decoration:none">×</a></span>`; }).join('')}</div>` : ''}
+      </div>
+      <label>上の句 開始</label>
+      <div class="row"><b>${fmtT(r.t)}</b><button class="small" data-act="setT">今の位置にする</button><button class="small" data-act="gotoT">ここへ移動</button></div>
+      <label>決まり字時刻</label>
+      <div class="row"><b>${fmtT(kt.t)}</b>${kt.est && kt.t != null ? '<span class="muted small">(推定)</span>' : ''}<button class="small" data-act="setK">今の位置にする (K)</button>${r.kimariT != null ? '<button class="small ghost" data-act="clearK">推定に戻す</button>' : ''}</div>
+      <label>反応</label>
+      <div>${reactRow('N')}${reactRow('F')}<div class="muted small">決まり字時刻からの差(マイナス=決まり字より前に動いた)</div></div>
+    </div>
+    ${st.warnings.length ? `<div class="warnbox" style="margin-top:10px">${st.warnings.map(esc).join('<br>')}</div>` : ''}
+    <div class="row" style="margin-top:10px">
+      <label class="small"><input type="checkbox" data-act="toggleExclude" ${r.excluded ? 'checked' : ''}> カット動画から除外</label>
+      <span class="spacer"></span><button class="small danger" data-act="delRead">この読みを削除</button>
+    </div>`;
+  bindCommon(el);
+  el.querySelectorAll('[data-act="delOp"]').forEach(a => a.addEventListener('click', e => e.preventDefault()));
+}
+function curRead() { return curMatch().reads[App.sel]; }
+function afterReadEdit(redrawAll = true) {
+  const m = curMatch(); saveMatch(m); refreshRP();
+  drawEditor(); drawReads(); if (redrawAll) { drawBoard(); drawTimelines(); }
+}
+ACT.gotoJo = () => { const jo = curMatch().reads.find(r => r.card === 0); if (jo) seekTo(jo.t + 1.5); };
+ACT.removePick = () => { const m = curMatch(); const k = invertBoard(m.layout)[App.pick]; if (k) delete m.layout[k]; App.pick = null; saveMatch(m); refreshRP(); drawBoard(); drawEditor(); };
+ACT.clearLayout = () => { if (!confirm('初期配置をすべて消しますか?')) return; const m = curMatch(); m.layout = {}; saveMatch(m); refreshRP(); drawBoard(); drawEditor(); drawReads(); };
+ACT.pickCard = () => {
+  const m = curMatch(), r = curRead();
+  const used = new Set(m.reads.filter(x => x !== r && x.card > 0).map(x => x.card));
+  openPicker({ title: `#${App.sel + 1} で読まれた札`, used, cands: r.cand || [], allowJo: true, allowNone: true, onPick: c => { r.card = c; if (c == null || !RP.steps[App.sel]?.onField) r.taker = r.taker; afterReadEdit(); } });
+};
+ACT.setCard = el => { curRead().card = +el.dataset.v; afterReadEdit(); };
+ACT.setTaker = el => { const r = curRead(); r.taker = el.dataset.v || null; afterReadEdit(); };
+ACT.toggleFault = el => { const r = curRead(); r.fault = r.fault || {}; r.fault[el.dataset.v] = !r.fault[el.dataset.v]; afterReadEdit(); };
+ACT.delOp = el => { curRead().ops.splice(+el.dataset.i, 1); afterReadEdit(); };
+ACT.setT = () => { const t = nowT(); if (t == null) return; curRead().t = t; sortReads(); afterReadEdit(); };
+ACT.gotoT = () => seekTo(curRead().t);
+ACT.setK = () => { const t = nowT(); if (t == null) return; curRead().kimariT = t; afterReadEdit(); };
+ACT.clearK = () => { curRead().kimariT = null; afterReadEdit(); };
+ACT.markReact = el => { const t = nowT(); if (t == null) return toast('動画を開いてください'); const r = curRead(); r.react = r.react || {}; r.react[el.dataset.side] = { ...(r.react[el.dataset.side] || {}), [el.dataset.k]: t }; afterReadEdit(); };
+ACT.clearReact = el => { const r = curRead(); if (r.react) delete r.react[el.dataset.side]; afterReadEdit(); };
+ACT.toggleExclude = el => { curRead().excluded = el.checked; afterReadEdit(); };
+ACT.delRead = () => { const m = curMatch(); if (!confirm(`#${App.sel + 1} の読みを削除しますか?`)) return; m.reads.splice(App.sel, 1); App.sel = Math.min(App.sel, m.reads.length - 1); afterReadEdit(); };
+ACT.selLayout = () => { App.sel = -1; App.pick = null; drawBoard(); drawEditor(); drawReads(); };
+ACT.addRead = () => {
+  const m = curMatch();
+  const r = { id: uid(), t: nowT(), card: null, taker: null, fault: {}, ops: [], react: {} };
+  m.reads.push(r); sortReads(r.id);
+  refreshRP(); drawReads(); drawEditor(); drawBoard();
+  ACT.pickCard();
+};
+function sortReads(keepId) {
+  const m = curMatch();
+  const selId = keepId || m.reads[App.sel]?.id;
+  m.reads.sort((a, b) => (a.t ?? 1e12) - (b.t ?? 1e12));
+  App.sel = m.reads.findIndex(r => r.id === selId);
+}
+function selectRead(i, seek = true) {
+  App.sel = i; App.pick = null;
+  const r = curMatch().reads[i];
+  if (seek && r?.t != null) seekTo(r.t - 0.8);
+  drawBoard(); drawEditor(); drawReads(); drawTimelines();
+  $('#reads tr.sel')?.scrollIntoView({ block: 'nearest' });
+}
+
+// ===== 読みの一覧 =====
+function drawReads() {
+  const m = curMatch();
+  $('#reads-count').textContent = `${m.reads.length}件`;
+  if (!m.reads.length) { $('#reads').innerHTML = '<div class="muted small" style="padding:12px">まだ読みがありません。左の「音声解析」で自動検出するか、動画の上の句が始まる位置で <kbd>R</kbd> を押して追加します。</div>'; return; }
+  $('#reads').innerHTML = `<table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th>反応(動き出し)</th><th></th></tr>
+  ${m.reads.map((r, i) => {
+    const st = RP.steps[i];
+    const low = r.card == null || (r.cand && r.cand[0] && r.cand[0][1] < 0.5 && r.cand[0][0] === r.card && !r.checked);
+    const kt = kimariTime(r, st);
+    const rx = s => (r.react?.[s]?.move != null && kt.t != null ? `<span class="dot ${s.toLowerCase()}"></span>${fmtMs(r.react[s].move - kt.t)}` : '');
+    return `<tr data-i="${i}" class="${i === App.sel ? 'sel' : ''} ${low ? 'low' : ''}">
+      <td class="muted">${i + 1}</td><td class="num">${fmtT(r.t)}</td>
+      <td><b>${r.card === 0 ? '序歌' : r.card ? (st.kimari || STD_KIMARI[r.card]) : '未確定'}</b>${low && r.card != null ? ' <span data-tip="音声認識の確信度が低めです">?</span>' : ''}</td>
+      <td class="small">${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣' : '<span class="muted">空札</span>') : ''}</td>
+      <td>${st.take ? `<span class="dot ${st.take.side.toLowerCase()}"></span>${esc(sideName(m, st.take.side))}` : ''}</td>
+      <td>${st.faults.map(f => `<span class="dot ${f.side.toLowerCase()}"></span>`).join('')}</td>
+      <td class="small">${st.sends.map(s => STD_KIMARI[s.card]).join('・')}</td>
+      <td class="small">${rx('N')} ${rx('F')}</td>
+      <td>${st.warnings.length ? `<span data-tip="${esc(st.warnings.join(' / '))}" style="color:var(--warn)">⚠</span>` : ''}${RP.winnerAt === i ? '🏁' : ''}</td></tr>`;
+  }).join('')}</table>`;
+  $$('#reads tr[data-i]').forEach(tr => tr.addEventListener('click', () => selectRead(+tr.dataset.i)));
+}
+
+// ===== タイムライン =====
+function drawTimelines() {
+  const m = curMatch(), v = vid();
+  const dur = v?.duration || m.video?.duration || 0;
+  const cv = $('#tl-all'), cz = $('#tl-zoom');
+  if (!cv) return;
+  const css = getComputedStyle(document.documentElement);
+  const col = n => css.getPropertyValue(n).trim();
+  const setup = c => { const w = c.clientWidth, h = +c.getAttribute('height'), dpr = devicePixelRatio || 1; c.width = w * dpr; c.height = h * dpr; c.style.height = h + 'px'; const g = c.getContext('2d'); g.scale(dpr, dpr); return [g, w, h]; };
+  const cur = v?.currentTime || 0;
+  const cuts = computeCuts(m);
+  // 全体
+  {
+    const [g, w, h] = setup(cv);
+    g.clearRect(0, 0, w, h);
+    if (dur) {
+      const X = t => t / dur * w;
+      g.fillStyle = col('--line');
+      (m.audio?.units || []).forEach(u => g.fillRect(X(u.s), 14, Math.max(1, X(u.e) - X(u.s)), 18));
+      g.fillStyle = col('--good');
+      cuts.forEach(c => g.fillRect(X(c[0]), h - 5, Math.max(1, X(c[1]) - X(c[0])), 4));
+      m.reads.forEach((r, i) => {
+        if (r.t == null) return;
+        const st = RP.steps[i];
+        g.fillStyle = r.card == null ? col('--warn') : st?.take ? col(st.take.side === 'N' ? '--near' : '--far') : r.card === 0 ? col('--accent') : col('--muted');
+        g.fillRect(X(r.t) - 1, i === App.sel ? 2 : 8, i === App.sel ? 3 : 2, i === App.sel ? 34 : 28);
+      });
+      g.fillStyle = col('--text'); g.fillRect(X(cur) - 1, 0, 2, h);
+      $('#tl-info').textContent = `${fmtT(cur)} / ${fmtT(dur)}`;
+    } else { g.fillStyle = col('--muted'); g.font = '12px sans-serif'; g.fillText('動画を開くと表示されます', 8, 28); }
+  }
+  // 拡大
+  {
+    const [g, w, h] = setup(cz);
+    g.clearRect(0, 0, w, h);
+    if (!dur) return;
+    const a = cur - 8, b = cur + 8, X = t => (t - a) / (b - a) * w;
+    // 音量
+    if (App.energy) {
+      g.fillStyle = col('--line-2');
+      const hop = 0.02, e = App.energy, lo = App.energyRange[0], hi = App.energyRange[1];
+      for (let t = Math.max(0, a); t < b; t += hop) {
+        const i = Math.floor(t / hop); if (i >= e.length) break;
+        const y = clamp((e[i] - lo) / (hi - lo), 0, 1) * (h - 20);
+        g.fillRect(X(t), h - 12 - y, Math.max(1, w / 800), y);
+      }
+    }
+    g.fillStyle = col('--accent-soft');
+    (m.audio?.segs || []).forEach(s => { if (s[1] > a && s[0] < b) g.fillRect(X(s[0]), h - 12, X(s[1]) - X(s[0]), 4); });
+    g.fillStyle = col('--good');
+    cuts.forEach(c => { if (c[1] > a && c[0] < b) g.fillRect(X(c[0]), h - 5, X(c[1]) - X(c[0]), 4); });
+    g.font = 'bold 11px sans-serif';
+    m.reads.forEach((r, i) => {
+      if (r.t == null || r.t < a - 6 || r.t > b) return;
+      const st = RP.steps[i];
+      g.fillStyle = i === App.sel ? col('--accent') : col('--text-2');
+      g.fillRect(X(r.t) - 1, 0, 2, h - 12);
+      g.fillText(`${r.card === 0 ? '序歌' : r.card ? STD_KIMARI[r.card] : '?'}`, X(r.t) + 3, 11);
+      const kt = kimariTime(r, st);
+      if (kt.t != null) { g.setLineDash([3, 3]); g.strokeStyle = g.fillStyle; g.beginPath(); g.moveTo(X(kt.t), 14); g.lineTo(X(kt.t), h - 12); g.stroke(); g.setLineDash([]); }
+      for (const s of ['N', 'F']) {
+        const rc = r.react?.[s]; if (!rc) continue;
+        g.fillStyle = col(s === 'N' ? '--near' : '--far');
+        const y = s === 'N' ? h - 22 : h - 34;
+        if (rc.move != null) { g.beginPath(); g.moveTo(X(rc.move), y - 6); g.lineTo(X(rc.move) - 5, y + 3); g.lineTo(X(rc.move) + 5, y + 3); g.fill(); }
+        if (rc.touch != null) { g.beginPath(); g.arc(X(rc.touch), y, 4, 0, 7); g.fill(); }
+      }
+    });
+    g.fillStyle = col('--text'); g.fillRect(w / 2 - 1, 0, 2, h);
+    g.fillStyle = col('--muted'); g.font = '10px sans-serif';
+    for (let t = Math.ceil(a); t <= b; t++) if (t >= 0 && t % 2 === 0) g.fillText(fmtT(t).replace(/\.\d$/, ''), X(t) + 2, h - 1 - 6);
+  }
+}
+function setupTimelineClicks() {
+  $('#tl-all').addEventListener('click', e => {
+    const v = vid(); if (!v?.duration) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    seekTo((e.clientX - r.left) / r.width * v.duration);
+  });
+  $('#tl-zoom').addEventListener('click', e => {
+    const v = vid(); if (!v?.duration) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    seekTo(v.currentTime + ((e.clientX - r.left) / r.width - 0.5) * 16);
+  });
+  window.onresize = () => { if (App.view === 'match' && App.tab === 'edit') drawTimelines(); };
+}
+
+// ===== キーボード =====
+document.addEventListener('keydown', e => {
+  if (App.view !== 'match' || App.tab !== 'edit') return;
+  if (e.target.closest('input, textarea, select') || $('.modal-bg')) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const m = curMatch(), k = e.key;
+  const fps = m.fps || 30;
+  const v = vid();
+  const handled = () => e.preventDefault();
+  if (k === ' ') { handled(); ACT.play(); }
+  else if (k === 'ArrowLeft' || k === 'ArrowRight') {
+    handled(); if (!v) return;
+    const d = (k === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1 : 1 / fps);
+    if (!e.shiftKey) v.pause();
+    seekTo(v.currentTime + d);
+  }
+  else if (k === 'ArrowUp' || k === 'ArrowDown') { handled(); if (!m.reads.length) return; selectRead(clamp(App.sel + (k === 'ArrowUp' ? -1 : 1), 0, m.reads.length - 1)); }
+  else if (k === 'r' || k === 'R') { handled(); ACT.addRead(); }
+  else if ((k === 'k' || k === 'K') && App.sel >= 0) { handled(); ACT.setK(); }
+  else if (['1', '2', '9', '0'].includes(k) && App.sel >= 0) {
+    handled();
+    const side = k === '1' || k === '2' ? 'N' : 'F', key = k === '1' || k === '9' ? 'move' : 'touch';
+    ACT.markReact({ dataset: { side, k: key } });
+  }
+  else if (k === 'Escape') { App.pick = null; drawBoard(); drawEditor(); }
+  else if ((k === 'Delete' || k === 'Backspace') && App.sel < 0 && App.pick != null) { handled(); ACT.removePick(); }
+});
+
+// ===== 音声解析パネル =====
+const ASR_MODELS = [
+  ['onnx-community/whisper-small', '推奨(約250MB)'],
+  ['onnx-community/whisper-base', '速い(約80MB・精度やや低め)'],
+  ['onnx-community/whisper-large-v3-turbo', '最高精度・試験的(約800MB・WebGPU必須)'],
+  ['onnx-community/whisper-tiny', '軽量(約40MB・精度低め)'],
+];
+function audioPanelHTML(m) {
+  const a = m.audio || {};
+  return `<details class="panel" ${m.reads.length ? '' : 'open'}><summary>音声解析(読みの自動検出)</summary><div class="body stack">
+    <div class="small">① 音量から「読み」のまとまりを見つけて、上の句の開始位置に読みを並べます。② 音声認識(Whisper)で、どの札が読まれたかを推定します。どちらも動画はこのパソコン内で処理されます。</div>
+    <div class="slider-row"><span>検出の感度</span><input type="range" min="0" max="1" step="0.05" value="${a.sens ?? 0.5}" id="au-sens"><span class="muted small" id="au-sens-v">${a.sens ?? 0.5}</span></div>
+    <div class="row">
+      <button class="primary" data-act="detect">① 読みの区切りを検出</button>
+      <span class="muted small">${a.units ? `前回:${a.units.length}か所を検出` : ''}</span>
+    </div>
+    <div class="row">
+      <select id="au-model">${ASR_MODELS.map(([k, l]) => `<option value="${k}" ${(a.model || ASR_MODELS[0][0]) === k ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      <button class="primary" data-act="runASR" ${a.units ? '' : 'disabled'}>② 札を音声認識</button>
+      <button data-act="cancelASR" id="au-cancel" style="display:none">中止</button>
+    </div>
+    <div class="progress"><div id="au-prog"></div></div>
+    <div class="small muted" id="au-status">${a.asrDone ? `音声認識済み(${esc(a.model || '')})` : ''}</div>
+    <div class="muted small">・音声認識は初回にモデルをダウンロードします(以後はブラウザに保存)。<br>・確信度が低い読みは一覧で <b style="color:var(--warn)">黄色</b> になります。候補から選び直してください。</div>
+  </div></details>`;
+}
+function setStatus(t, p) { const s = $('#au-status'); if (s) s.textContent = t; if (p != null) { const b = $('#au-prog'); if (b) b.style.width = (p * 100).toFixed(1) + '%'; } }
+document.addEventListener('input', e => { if (e.target.id === 'au-sens') $('#au-sens-v').textContent = e.target.value; });
+
+ACT.detect = async () => {
+  const m = curMatch();
+  if (!App.videoFile) return toast('先に動画を開いてください');
+  try {
+    const A = await decodeVideoAudio(App.videoFile, t => setStatus(t, 0.1));
+    setStatus('音量を解析中…', 0.5);
+    await new Promise(r => setTimeout(r, 20));
+    App.energy = energyDb(A.data, A.sr);
+    App.energyRange = [percentile(App.energy, 0.1), percentile(App.energy, 0.995)];
+    const sens = +$('#au-sens').value;
+    const segs = detectVoiced(App.energy, 0.02, sens);
+    const units = groupUnits(segs);
+    m.audio = { ...(m.audio || {}), sens, segs: segs.map(s => s.map(x => +x.toFixed(2))), units: units.map(u => ({ s: +u.s.toFixed(2), e: +u.e.toFixed(2), subs: u.subs.map(s => s.map(x => +x.toFixed(2))) })), asrDone: false };
+    let replace = !m.reads.length;
+    if (m.reads.length) replace = confirm(`${units.length}か所の読みを検出しました。\n今ある${m.reads.length}件の読みを、検出結果で置き換えますか?\n(キャンセル:区切り情報だけ保存し、読みの一覧はそのまま)`);
+    if (replace) {
+      m.reads = m.audio.units.map(u => ({ id: uid(), t: +estimateOnset(u).toFixed(2), unit: [u.s, u.e], card: null, taker: null, fault: {}, ops: [], react: {} }));
+      App.sel = -1;
+    }
+    saveMatch(m, true); refreshRP();
+    saveVideoPos(); renderMatch();
+    setStatus(`${units.length}か所の読みを検出しました。続けて②で札を特定できます。`, 1);
+  } catch (e) {
+    console.error(e);
+    setStatus('音声の読み込みに失敗しました:' + e.message + '(動画が大きすぎる場合は、音声だけを書き出したファイルでも試せます)', 0);
+  }
+};
+
+ACT.cancelASR = () => { App.asrCancel = true; };
+ACT.runASR = async () => {
+  const m = curMatch();
+  if (!App.videoFile) return toast('先に動画を開いてください');
+  if (!m.audio?.units) return toast('先に①を実行してください');
+  const model = $('#au-model').value;
+  App.asrCancel = false;
+  $('#au-cancel').style.display = '';
+  try {
+    const A = await decodeVideoAudio(App.videoFile, t => setStatus(t, 0));
+    const pipe = await loadASR(model, t => setStatus(t, 0));
+    m.audio.model = model;
+    const units = m.audio.units;
+    const t0 = performance.now();
+    for (let ui = 0; ui < units.length; ui++) {
+      if (App.asrCancel) { setStatus('中止しました'); break; }
+      const u = units[ui];
+      const eta = ui ? ((performance.now() - t0) / ui * (units.length - ui) / 1000) : null;
+      setStatus(`音声認識中… ${ui + 1} / ${units.length}${eta ? `(残り約${Math.ceil(eta / 60)}分)` : ''} [${ASR.device}]`, ui / units.length);
+      // 30秒を超えるまとまりは分割
+      const parts = [];
+      for (let s = u.s; s < u.e; s += 28) parts.push([s, Math.min(u.e, s + 28)]);
+      let chunks = [], text = '';
+      for (const [s, e] of parts) {
+        const out = await transcribe(pipe, A.data, A.sr, s, e);
+        chunks.push(...out.chunks); text += out.text;
+      }
+      applyASRUnit(m, u, text, chunks);
+      if (ui % 3 === 0) { refreshRP(); drawReads(); drawTimelines(); }
+    }
+    if (!App.asrCancel) { m.audio.asrDone = true; setStatus(`音声認識が終わりました(${units.length}か所)。黄色の行を確認してください。`, 1); }
+    saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawBoard(); drawTimelines();
+  } catch (e) {
+    console.error(e);
+    setStatus('音声認識でエラーが発生しました:' + e.message);
+  } finally { const c = $('#au-cancel'); if (c) c.style.display = 'none'; }
+};
+// 1つのまとまりの認識結果を読みに反映
+function applyASRUnit(m, u, text, chunks) {
+  const inUnit = m.reads.filter(r => r.t != null && r.t >= u.s - 0.6 && r.t <= u.e + 0.3);
+  const usedElsewhere = new Set(m.reads.filter(r => !inUnit.includes(r) && r.card != null).map(r => r.card));
+  const pool = ALL_CARDS.filter(n => !usedElsewhere.has(n));
+  if (!usedElsewhere.has(0)) pool.push(0);
+  // チャンクごとに上の句と照合
+  const found = [];
+  for (const c of chunks) {
+    const sc = scoreCards(c.text, pool);
+    if (sc[0] && sc[0][1] >= 0.4 && !found.some(f => f.card === sc[0][0])) found.push({ card: sc[0][0], t: c.s, cand: sc.slice(0, 5), text: c.text });
+  }
+  if (!found.length) {
+    const sc = scoreCards(text, pool);
+    if (sc[0] && sc[0][1] >= 0.25) found.push({ card: sc[0][0], t: null, cand: sc.slice(0, 5), text });
+  }
+  const refine = t => {
+    if (t == null) return +estimateOnset(u).toFixed(2);
+    let best = t, bd = 1.0;
+    for (const s of u.subs) { const d = Math.abs(s[0] - t); if (d < bd) { bd = d; best = s[0]; } }
+    return +best.toFixed(2);
+  };
+  const targets = inUnit.filter(r => r.card == null);
+  found.forEach((f, i) => {
+    if (inUnit.some(r => r.card === f.card)) return; // 手動で確定済み
+    let r = targets.shift();
+    if (!r) { r = { id: uid(), card: null, taker: null, fault: {}, ops: [], react: {} }; m.reads.push(r); }
+    r.card = f.card; r.cand = f.cand; r.asr = f.text.trim(); r.unit = [u.s, u.e];
+    r.t = refine(f.t ?? r.t);
+  });
+  if (!found.length) targets.forEach(r => { r.asr = text.trim(); r.cand = []; });
+  const selId = m.reads[App.sel]?.id;
+  m.reads.sort((a, b) => (a.t ?? 1e12) - (b.t ?? 1e12));
+  App.sel = selId ? m.reads.findIndex(r => r.id === selId) : App.sel;
+}
+
+// ===== カット編集 =====
+function cutPanelHTML(m) {
+  const c = m.cut || (m.cut = { pre: 1.5, post: 2.5, fromShimo: false, jo: true });
+  const cuts = computeCuts(m);
+  const total = cuts.reduce((a, x) => a + x[1] - x[0], 0);
+  return `<details class="panel"><summary>カット編集(送り・並べ替えの時間を省く)</summary><div class="body stack">
+    <div class="small">各読みの「上の句の開始」を基準に、前後だけを残します。送りや並べ替えの場面は映像から省かれますが、記録(何を送ったか)は残ります。</div>
+    <div class="row small">
+      <label>開始の何秒前から <input type="number" step="0.5" min="0" value="${c.pre}" data-act="cutSet" data-k="pre"></label>
+      <label>取った後の余白(秒) <input type="number" step="0.5" min="0" value="${c.post}" data-act="cutSet" data-k="post"></label>
+      <label><input type="checkbox" data-act="cutSet" data-k="fromShimo" ${c.fromShimo ? 'checked' : ''}> 前の下の句から含める</label>
+      <label><input type="checkbox" data-act="cutSet" data-k="jo" ${c.jo ? 'checked' : ''}> 序歌を含める</label>
+    </div>
+    <div class="small">${cuts.length ? `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)` : '<span class="muted">読みを登録するとカット区間ができます</span>'}</div>
+    <div class="row">
+      <button data-act="cutPlay">カット再生 ${App.cutMode ? 'を止める' : ''}</button>
+      <button class="primary" data-act="cutExport" ${cuts.length ? '' : 'disabled'}>カット動画を書き出す</button>
+      <button data-act="cutList" ${cuts.length ? '' : 'disabled'}>区間リスト(ffmpeg用)</button>
+    </div>
+    <div class="muted small">書き出しは再生しながら録画するため、カット後の長さと同じ時間がかかります。書き出し中はこのタブを表示したままにしてください。</div>
+  </div></details>`;
+}
+ACT.cutSet = el => {
+  const m = curMatch();
+  m.cut[el.dataset.k] = el.type === 'checkbox' ? el.checked : Math.max(0, +el.value || 0);
+  saveMatch(m); drawTimelines();
+};
+function computeCuts(m) {
+  const c = m.cut || { pre: 1.5, post: 2.5 };
+  const rp = RP || replay(m);
+  const segs = [];
+  m.reads.forEach((r, i) => {
+    if (r.t == null || r.excluded) return;
+    if (r.card === 0 && !c.jo) return;
+    const st = rp.steps[i];
+    let s = r.t - c.pre;
+    if (c.fromShimo && r.unit) s = Math.min(s, r.unit[0] - 0.5);
+    let e = r.t + (r.card === 0 ? 8 : 4);
+    const kt = kimariTime(r, st).t;
+    if (kt != null) e = Math.max(e, kt + 1.5);
+    for (const p of ['N', 'F']) { const rc = r.react?.[p]; if (rc?.touch != null) e = Math.max(e, rc.touch); if (rc?.move != null) e = Math.max(e, rc.move + 0.8); }
+    e += c.post;
+    segs.push([Math.max(0, s), e]);
+  });
+  segs.sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const s of segs) {
+    const l = out[out.length - 1];
+    if (l && s[0] <= l[1] + 0.3) l[1] = Math.max(l[1], s[1]); else out.push([...s]);
+  }
+  return out;
+}
+ACT.cutPlay = () => {
+  App.cutMode = !App.cutMode;
+  const b = $('#btn-cut'); if (b) { b.textContent = `カット再生 ${App.cutMode ? 'ON' : 'OFF'}`; b.classList.toggle('on', App.cutMode); }
+  const v = vid();
+  if (App.cutMode && v) { cutPlaybackStep(v, true); v.play(); }
+  drawTimelines();
+};
+function cutPlaybackStep(v, force) {
+  const cuts = computeCuts(curMatch());
+  if (!cuts.length) return;
+  const t = v.currentTime;
+  if (cuts.some(c => t >= c[0] && t < c[1])) return;
+  const next = cuts.find(c => c[0] > t - 0.01);
+  if (next) v.currentTime = next[0];
+  else if (!force) { v.pause(); App.cutMode = false; const b = $('#btn-cut'); if (b) { b.textContent = 'カット再生 OFF'; b.classList.remove('on'); } }
+  else v.currentTime = cuts[0][0];
+}
+ACT.cutList = () => {
+  const m = curMatch(), cuts = computeCuts(m);
+  const name = m.video?.name || 'input.mp4';
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '.mp4';
+  let sh = `# ${m.title || ''} カット区間 (${cuts.length}区間)\n# ffmpeg で無劣化に近い形で切り出して結合する例\n`;
+  cuts.forEach((c, i) => { sh += `ffmpeg -y -ss ${c[0].toFixed(2)} -to ${c[1].toFixed(2)} -i "${name}" -c:v libx264 -crf 20 -c:a aac part${String(i).padStart(3, '0')}${ext}\n`; });
+  sh += `ls part*${ext} | sed "s/^/file '/; s/$/'/" > list.txt\nffmpeg -f concat -safe 0 -i list.txt -c copy cut${ext}\n`;
+  downloadBlob(new Blob([sh], { type: 'text/plain' }), `cut_${(m.date || '')}_${(m.title || 'match').replace(/[\\/:*?"<>|\s]/g, '_')}.sh`);
+};
+// 再生しながら録画して書き出す
+let AUDIO_ROUTE = null;
+ACT.cutExport = async () => {
+  const m = curMatch(), v = vid();
+  if (!v) return toast('先に動画を開いてください');
+  const cuts = computeCuts(m);
+  if (!cuts.length) return;
+  const mime = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'].find(t => window.MediaRecorder?.isTypeSupported?.(t));
+  if (!mime) return alert('このブラウザは動画の書き出しに対応していません。「区間リスト」をお使いください。');
+  const total = cuts.reduce((a, x) => a + x[1] - x[0], 0);
+  if (!confirm(`カット後の長さは ${fmtT(total)} です。書き出しには同じくらいの時間がかかります。始めますか?`)) return;
+  App.cutMode = false;
+  const W = Math.min(1280, v.videoWidth || 1280), H = Math.round(W * (v.videoHeight || 720) / (v.videoWidth || 1280));
+  const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
+  const g = canvas.getContext('2d');
+  if (!AUDIO_ROUTE) {
+    const ctx = new AudioContext();
+    const src = ctx.createMediaElementSource(v);
+    const dest = ctx.createMediaStreamDestination();
+    src.connect(ctx.destination); src.connect(dest);
+    AUDIO_ROUTE = { ctx, dest };
+  }
+  await AUDIO_ROUTE.ctx.resume();
+  const stream = canvas.captureStream(30);
+  AUDIO_ROUTE.dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6e6 });
+  const parts = [];
+  rec.ondataavailable = e => e.data.size && parts.push(e.data);
+  let drawing = true;
+  const draw = () => { if (!drawing) return; g.drawImage(v, 0, 0, W, H); requestAnimationFrame(draw); };
+  const status = $('#au-status');
+  const seek = t => new Promise(r => { v.addEventListener('seeked', r, { once: true }); v.currentTime = t; });
+  v.pause(); v.playbackRate = 1;
+  draw();
+  let done = 0;
+  try {
+    for (let i = 0; i < cuts.length; i++) {
+      const [s, e] = cuts[i];
+      await seek(s);
+      if (i === 0) rec.start(1000); else rec.resume();
+      await v.play();
+      await new Promise(res => {
+        const chk = () => { if (v.currentTime >= e || v.paused || v.ended) return res(); requestAnimationFrame(chk); };
+        chk();
+      });
+      v.pause(); rec.pause();
+      done += e - s;
+      toast(`書き出し中… ${Math.round(done / total * 100)}%`, 1500);
+    }
+    await new Promise(r => { rec.onstop = r; rec.stop(); });
+    drawing = false;
+    const ext = mime.includes('mp4') ? 'mp4' : 'webm';
+    downloadBlob(new Blob(parts, { type: mime.split(';')[0] }), `cut_${(m.date || '')}_${(m.title || 'match').replace(/[\\/:*?"<>|\s]/g, '_')}.${ext}`);
+    toast('書き出しが完了しました');
+  } catch (e) {
+    drawing = false;
+    console.error(e); alert('書き出しに失敗しました: ' + e.message);
+  }
+};
+
+// ===== 集計タブ =====
+function summaryHTML(m) {
+  const { S, series, rp } = matchStats(m);
+  if (!Object.keys(m.layout || {}).length && !m.reads.length) return '<div class="card-box muted">編集タブで初期配置と読みを記録すると、ここに集計が表示されます。</div>';
+  const w = rp.winner;
+  const nm = s => esc(sideName(m, s));
+  const sideCard = s => {
+    const x = S[s];
+    return `<div class="card-box">
+      <div class="row"><span class="dot ${s.toLowerCase()}"></span><b>${nm(s)}</b><span class="muted small">(${SIDE_NAME[s]})</span><span class="spacer"></span><span>取り <b>${x.total}</b>枚</span></div>
+      <div class="area-cap" style="margin-top:8px">敵陣</div>
+      <div class="area4">
+        <div class="enemy"><span class="lab">左</span><b>${x.take.enemyL}</b></div><div class="enemy"><span class="lab">右</span><b>${x.take.enemyR}</b></div>
+        <div class="own"><span class="lab">左</span><b>${x.take.ownL}</b></div><div class="own"><span class="lab">右</span><b>${x.take.ownR}</b></div>
+      </div>
+      <div class="area-cap">自陣(左右は${nm(s)}から見た向き)</div>
+      <table class="t" style="margin-top:10px"><tr><th></th>${ROW_NAMES.map(r => `<th class="num">${r}</th>`).join('')}</tr>
+        <tr><td>自陣</td>${x.rows.own.map(v => `<td class="num">${v}</td>`).join('')}</tr>
+        <tr><td>敵陣</td>${x.rows.enemy.map(v => `<td class="num">${v}</td>`).join('')}</tr></table>
+      <div class="row" style="margin-top:10px"><span>お手つき <b>${x.faults.空札 + x.faults.出札}</b>回</span><span class="muted small">(空札 ${x.faults.空札} / 出札時 ${x.faults.出札})</span></div>
+      <div style="margin-top:8px"><div class="small muted">送った札(${x.sent.length}枚)</div><div class="chips">${x.sent.map(sd => `<span class="chip" data-tip="#${sd.i + 1} ${esc(POEMS[sd.card].kami)}">${STD_KIMARI[sd.card]}</span>`).join('') || '<span class="muted small">なし</span>'}</div></div>
+    </div>`;
+  };
+  const lens = [1, 2, 3, 4, 5, 6];
+  return `<div class="stack">
+    <div class="card-box score">
+      <div class="side"><div class="name"><span class="dot n"></span>${nm('N')}</div><div class="num">${rp.count.N}</div><div class="small muted">残り枚数</div>${w === 'N' ? '<div class="win">勝ち</div>' : ''}</div>
+      <div class="side">
+        <div class="muted">${esc(m.date || '')} ${esc(m.title || '')}</div>
+        <div style="font-size:18px;margin:4px 0">${w ? `${nm(w)} の ${rp.count[opp(w)]}枚差勝ち` : '決着前(記録途中)'}</div>
+        <label class="small">勝者 <select data-act="setWinner"><option value="">自動判定${rp.autoWinner ? '(' + nm(rp.autoWinner) + ')' : ''}</option><option value="N" ${m.result?.winner === 'N' ? 'selected' : ''}>${nm('N')}</option><option value="F" ${m.result?.winner === 'F' ? 'selected' : ''}>${nm('F')}</option></select></label>
+      </div>
+      <div class="side"><div class="name"><span class="dot f"></span>${nm('F')}</div><div class="num">${rp.count.F}</div><div class="small muted">残り枚数</div>${w === 'F' ? '<div class="win">勝ち</div>' : ''}</div>
+    </div>
+    <div class="grid2">${sideCard('N')}${sideCard('F')}</div>
+    <div class="grid2">
+      <div class="card-box"><h3>残り枚数の推移</h3>
+        ${lineChart(['N', 'F'].map(s => ({ name: sideName(m, s), color: `var(--${s === 'N' ? 'near' : 'far'})`, pts: series.map((p, k) => ({ x: k, y: p[s], tip: `${p.i < 0 ? '開始時' : '#' + (p.i + 1)} ${esc(sideName(m, s))} ${p[s]}枚` })) })), { xFmt: v => v ? '#' + v : '開始', ymin: 0, dots: false })}
+      </div>
+      <div class="card-box"><h3>決まり字の長さ別 取った枚数</h3>
+        <table class="t"><tr><th>決まり字</th>${lens.map(L => `<th class="num">${L}字</th>`).join('')}</tr>
+        ${['N', 'F'].map(s => `<tr><td><span class="dot ${s.toLowerCase()}"></span>${nm(s)}</td>${lens.map(L => `<td class="num">${S[s].byLen[L] || 0}</td>`).join('')}</tr>`).join('')}</table>
+        <div class="muted small" style="margin-top:6px">決まり字は読まれた時点のもの(場の札が減ると短くなります)</div>
+      </div>
+    </div>
+    <div class="card-box"><h3>読みの記録</h3>
+      <div class="scroll" style="max-height:420px;overflow:auto"><table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>決まり字</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th class="num">残り(手前-奥)</th></tr>
+      ${rp.steps.map(st => { const r = st.read; return `<tr><td class="muted">${st.i + 1}</td><td>${fmtT(r.t)}</td>
+        <td>${r.card === 0 ? '序歌' : r.card ? esc(POEMS[r.card].kami.split(' ')[0]) : '未確定'}</td><td><b>${st.kimari || ''}</b></td>
+        <td>${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣 ' + (lrOf(st.slot.col) === 'L' ? '左' : '右') + ROW_NAMES[st.slot.row] : '空札') : ''}</td>
+        <td>${st.take ? `<span class="dot ${st.take.side.toLowerCase()}"></span>${nm(st.take.side)}${st.take.own ? '' : '(敵陣)'}` : ''}</td>
+        <td>${st.faults.map(f => nm(f.side)).join('、')}</td><td>${st.sends.map(s => STD_KIMARI[s.card]).join('・')}</td>
+        <td class="num">${st.count.N}-${st.count.F}</td></tr>`; }).join('')}
+      </table></div>
+    </div>
+  </div>`;
+}
+ACT.setWinner = el => { const m = curMatch(); m.result = { ...(m.result || {}), winner: el.value || null }; saveMatch(m, true); renderMatch(); };
+
+// ===== 分析タブ =====
+const SIM_CACHE = {};
+function simParams(m) {
+  const P = { ...DEFAULT_SIM, ...(m.simParams || {}) };
+  P.rowAdj = [-(P.rowGap ?? 0.125), 0, (P.rowGap ?? 0.125)];
+  if (m.simParams?.skill == null) P.skill = defaultSkill(m);
+  return P;
+}
+function defaultSkill(m) {
+  const sk = s => {
+    const pid = m.players?.[s]; if (!pid) return 0;
+    let t = 0, l = 0;
+    for (const o of App.matches) {
+      if (o.id === m.id) continue;
+      const side = o.players?.N === pid ? 'N' : o.players?.F === pid ? 'F' : null; if (!side) continue;
+      const { S } = matchStats(o); t += S[side].total; l += S[opp(side)].total;
+    }
+    return logit((t + 5) / (t + l + 10));
+  };
+  return +((sk('N') - sk('F')) / 2).toFixed(2);
+}
+function analysisHTML(m) {
+  const { S, rp } = matchStats(m);
+  const P = simParams(m);
+  const cache = SIM_CACHE[m.id] || {};
+  const reactCard = s => {
+    const R = S[s].react;
+    const mv = R.map(r => r.move).filter(x => x != null), tc = R.map(r => r.touch).filter(x => x != null);
+    const byLen = {};
+    R.forEach(r => { if (r.move != null && r.len) (byLen[r.len] = byLen[r.len] || []).push(r.move); });
+    return `<div><div class="row"><span class="dot ${s.toLowerCase()}"></span><b>${esc(sideName(m, s))}</b><span class="muted small">${R.length}回記録</span></div>
+      <div class="row" style="gap:20px;margin:6px 0"><div><div class="muted small">動き出し 平均</div><b style="font-size:20px">${fmtMs(mean(mv))}</b></div><div><div class="muted small">到達 平均</div><b style="font-size:20px">${fmtMs(mean(tc))}</b></div>
+      <div><div class="muted small">取れた時の動き出し</div><b style="font-size:20px">${fmtMs(mean(R.filter(r => r.took && r.move != null).map(r => r.move)))}</b></div></div>
+      ${Object.keys(byLen).length ? `<table class="t"><tr><th>決まり字</th><th class="num">回数</th><th class="num">動き出し平均</th></tr>${Object.keys(byLen).sort().map(L => `<tr><td>${L}字</td><td class="num">${byLen[L].length}</td><td class="num">${fmtMs(mean(byLen[L]))}</td></tr>`).join('')}</table>` : ''}
+    </div>`;
+  };
+  const anyReact = S.N.react.length + S.F.react.length;
+  const slider = (k, label, min, max, step, val, hint) => `<div class="slider-row"><span>${label}${hint ? ` <span class="muted small" data-tip="${esc(hint)}">ⓘ</span>` : ''}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${val}" data-act="simParam" data-k="${k}"><span class="small">${val}</span></div>`;
+  return `<div class="stack">
+    <div class="card-box"><h3>反応時間(決まり字が読まれてから手が動くまで)</h3>
+      ${anyReact ? `<div class="grid2">${reactCard('N')}${reactCard('F')}</div>
+        <div style="margin-top:12px">${lineChart(['N', 'F'].map(s => ({ name: sideName(m, s) + ' 動き出し', color: `var(--${s === 'N' ? 'near' : 'far'})`, pts: S[s].react.filter(r => r.move != null).map(r => ({ x: r.i + 1, y: Math.round(r.move * 1000), tip: `#${r.i + 1} ${r.card ? STD_KIMARI[r.card] : ''}(${r.len}字) ${esc(sideName(m, s))} ${fmtMs(r.move)}${r.took ? ' 取り' : ''}${r.est ? ' ※決まり字時刻は推定' : ''}` })) })).map(x => ({ ...x, pts: x.pts })), { yLabel: 'ms', refY: 0, xFmt: v => '#' + v, noLine: true, w: 1000, h: 240 })}</div>
+        <div class="muted small">0ms = 決まり字の時刻。マイナスは決まり字より前に動き出したことを表します。決まり字時刻を記録していない読みは「上の句開始+0.2秒×字数」で推定しています。</div>`
+      : '<div class="muted small">編集タブで、動画をコマ送りしながら <kbd>1</kbd>(手前の動き出し)<kbd>2</kbd>(手前の到達)<kbd>9</kbd><kbd>0</kbd>(奥)を押すと記録できます。決まり字の時刻は <kbd>K</kbd> で正確に合わせられます。</div>'}
+    </div>
+    <div class="card-box"><div class="row"><h3 style="margin:0">勝率の推移</h3><span class="spacer"></span><button class="primary" data-act="runWinProb">計算する</button></div>
+      <div id="wp-out" style="margin-top:8px">${cache.wp ? winProbChart(m, cache.wp) : '<div class="muted small">各読みの後の盤面から残りの試合を何百回もシミュレーションし、手前の選手の勝率を出します。将棋の評価値グラフのように、流れが変わった読みがわかります。</div>'}</div>
+    </div>
+    <div class="card-box"><div class="row"><h3 style="margin:0">送り札の評価</h3><span class="spacer"></span><button class="primary" data-act="runSendEval">評価する</button></div>
+      <div id="se-out" style="margin-top:8px">${cache.se ? sendEvalHTML(m, cache.se) : '<div class="muted small">送れた札それぞれについて「その札を送った場合の勝率」を計算し、実際に送った札と最善の札を比べます。</div>'}</div>
+    </div>
+    <details class="panel"><summary>評価モデルの設定</summary><div class="body stack">
+      <div class="small">取りの確率を決める簡易モデルです。試合の記録がたまったら、選手ごとの傾向を学習させる形に発展させる予定です。</div>
+      ${slider('home', '自陣の有利さ', 0, 1.5, 0.05, P.home, '自陣の札を持ち主が取る確率の底上げ(0.7で約67%)')}
+      ${slider('rowGap', '下段の守りやすさ', 0, 0.5, 0.025, P.rowGap ?? 0.125, '下段は守りやすく、上段は攻められやすい度合い')}
+      ${slider('hand', '利き手側の有利さ', 0, 0.5, 0.05, P.hand, '利き手側(右利きなら右)の札を守りやすい度合い。利き手は選手登録で設定')}
+      ${slider('split', '友札が分かれた不利', -1, 0, 0.05, P.split, '友札が相手陣にもある札は守りにくくなる度合い')}
+      ${slider('fault', 'お手つき率', 0, 0.1, 0.005, P.fault, '1回の読みでお手つきが起きる確率')}
+      ${slider('skill', '実力差(+で手前が有利)', -1.5, 1.5, 0.05, P.skill, '初期値は過去の試合記録から推定。記録がなければ0')}
+      ${slider('sims', '試行回数', 100, 2000, 100, P.sims, '多いほど正確ですが時間がかかります')}
+      <div><button class="small" data-act="simReset">初期設定に戻す</button></div>
+    </div></details>
+  </div>`;
+}
+ACT.simParam = el => {
+  const m = curMatch();
+  m.simParams = { ...(m.simParams || {}), [el.dataset.k]: +el.value };
+  saveMatch(m); delete SIM_CACHE[m.id]; renderMatch();
+};
+ACT.simReset = () => { const m = curMatch(); m.simParams = null; saveMatch(m); delete SIM_CACHE[m.id]; renderMatch(); };
+const yieldUI = () => new Promise(r => setTimeout(r, 0));
+function simHands(m) { return { N: pById(m.players?.N)?.hand || 'R', F: pById(m.players?.F)?.hand || 'R' }; }
+
+ACT.runWinProb = async el => {
+  const m = curMatch();
+  if (Object.keys(m.layout || {}).length < 2) return toast('初期配置を入力してください');
+  const P = simParams(m), hands = simHands(m), rp = replay(m);
+  el.disabled = true;
+  const out = [{ i: -1, p: winProb(m.layout, new Set(ALL_CARDS), P, hands, 'N', P.sims, 7) }];
+  for (const st of rp.steps) {
+    if (!st.read.card && st.read.card !== 0) { out.push({ i: st.i, p: out[out.length - 1].p, skip: true }); continue; }
+    const unread = new Set(ALL_CARDS.filter(n => !st.readSet.has(n)));
+    out.push({ i: st.i, p: winProb(st.after, unread, P, hands, 'N', P.sims, 7 + st.i), card: st.read.card, take: st.take?.side });
+    $('#wp-out').innerHTML = `<div class="progress"><div style="width:${(st.i + 1) / rp.steps.length * 100}%"></div></div><div class="muted small">計算中… ${st.i + 1} / ${rp.steps.length}</div>`;
+    await yieldUI();
+  }
+  (SIM_CACHE[m.id] = SIM_CACHE[m.id] || {}).wp = out;
+  $('#wp-out').innerHTML = winProbChart(m, out);
+  el.disabled = false;
+};
+function winProbChart(m, wp) {
+  // 大きく動いた読み
+  const swings = wp.slice(1).map((x, k) => ({ ...x, d: x.p - wp[k].p })).filter(x => !x.skip).sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 5);
+  return `${lineChart([{ name: sideName(m, 'N') + ' の勝率', color: 'var(--near)', pts: wp.map((x, k) => ({ x: k, y: Math.round(x.p * 100), tip: `${x.i < 0 ? '開始時' : '#' + (x.i + 1) + ' ' + (x.card === 0 ? '序歌' : x.card ? STD_KIMARI[x.card] : '')} ${esc(sideName(m, 'N'))}の勝率 ${Math.round(x.p * 100)}%` })) }],
+    { ymin: 0, ymax: 100, yTicks: [0, 25, 50, 75, 100], yFmt: v => v + '%', refY: 50, xFmt: v => v ? '#' + v : '開始', dots: false, w: 1000, h: 240 })}
+    <div class="small" style="margin-top:6px">流れが大きく動いた読み:${swings.map(x => `<span class="chip" style="margin-right:4px">#${x.i + 1} ${x.card === 0 ? '序歌' : STD_KIMARI[x.card] || ''} ${x.d > 0 ? '▲' : '▼'}${Math.abs(Math.round(x.d * 100))}pt</span>`).join('')}</div>
+    <div class="muted small">縦軸は ${esc(sideName(m, 'N'))}(手前)の勝率。${esc(sideName(m, 'F'))}の勝率は 100% からこの値を引いたものです。</div>`;
+}
+
+ACT.runSendEval = async el => {
+  const m = curMatch();
+  const P = simParams(m), hands = simHands(m), rp = replay(m);
+  const sends = rp.steps.flatMap(st => st.sends.map(sd => ({ ...sd, i: st.i })));
+  if (!sends.length) return toast('送りの記録がありません');
+  el.disabled = true;
+  const res = [];
+  const n = Math.max(100, Math.round(P.sims / 2));
+  for (let k = 0; k < sends.length; k++) {
+    const sd = sends[k];
+    const pos = invertBoard(sd.boardBefore);
+    const cands = Object.keys(pos).map(Number).filter(c => pos[c][0] === sd.from);
+    const scores = [];
+    for (const c of cands) {
+      const b = { ...sd.boardBefore }; delete b[pos[c]]; b[sd.toSlot] = c;
+      scores.push({ card: c, p: winProb(b, sd.unread, P, hands, sd.from, n, 1000 + k) });
+      $('#se-out').innerHTML = `<div class="progress"><div style="width:${(k + scores.length / cands.length) / sends.length * 100}%"></div></div><div class="muted small">計算中… 送り ${k + 1} / ${sends.length}</div>`;
+      if (scores.length % 3 === 0) await yieldUI();
+    }
+    scores.sort((a, b) => b.p - a.p);
+    const actual = scores.find(s => s.card === sd.card);
+    // 特徴
+    const flags = [];
+    const L = STD_KIMARI[sd.card].length;
+    if (L === 1) flags.push('一字決まり');
+    if (L >= 5) flags.push('大山札');
+    const fr = STD_FRIENDS[sd.card].filter(f => sd.unread.has(f) && pos[f]);
+    if (fr.some(f => pos[f][0] === sd.from)) flags.push('友札を分けた');
+    if (fr.some(f => pos[f][0] !== sd.from)) flags.push('友札を相手陣にまとめた');
+    res.push({ i: sd.i, from: sd.from, card: sd.card, actual: actual.p, best: scores[0], rank: scores.indexOf(actual) + 1, n: scores.length, top: scores.slice(0, 5), flags });
+    await yieldUI();
+  }
+  (SIM_CACHE[m.id] = SIM_CACHE[m.id] || {}).se = res;
+  $('#se-out').innerHTML = sendEvalHTML(m, res);
+  el.disabled = false;
+};
+function sendEvalHTML(m, res) {
+  const verdict = d => d < 0.02 ? ['好手', 'var(--good)'] : d < 0.05 ? ['まずまず', 'var(--text-2)'] : d < 0.1 ? ['疑問手', 'var(--warn)'] : ['悪手', 'var(--bad)'];
+  return `<table class="t"><tr><th>#</th><th>送った人</th><th>送った札</th><th class="num">勝率</th><th>最善の札</th><th class="num">最善の勝率</th><th class="num">差</th><th>判定</th><th>特徴</th></tr>
+    ${res.map(r => { const d = r.best.p - r.actual; const [v, c] = verdict(d);
+      return `<tr><td class="muted">${r.i + 1}</td><td><span class="dot ${r.from.toLowerCase()}"></span>${esc(sideName(m, r.from))}</td>
+        <td><b>${STD_KIMARI[r.card]}</b> <span class="muted small">${r.rank}/${r.n}位</span></td><td class="num">${Math.round(r.actual * 100)}%</td>
+        <td data-tip="${r.top.map(t => STD_KIMARI[t.card] + ' ' + Math.round(t.p * 100) + '%').join('<br>')}">${STD_KIMARI[r.best.card]} <span class="muted small">ⓘ</span></td><td class="num">${Math.round(r.best.p * 100)}%</td>
+        <td class="num">${d > 0.004 ? '−' + Math.round(d * 100) + 'pt' : '0'}</td><td style="color:${c};font-weight:600">${v}</td>
+        <td class="small">${r.flags.join('・')}</td></tr>`; }).join('')}
+  </table>
+  <div class="muted small" style="margin-top:6px">勝率は送った側から見た値。候補の札は実際と同じ位置に置いたと仮定して比べています。判定は最善との差(2pt未満=好手、5pt未満=まずまず、10pt未満=疑問手)。簡易モデルによる参考値で、試行回数による誤差が数pt程度あります。</div>`;
+}
+
+
+// ===== 起動 =====
+(async () => {
+  try {
+    App.players = await DB.all('players');
+    App.matches = await DB.all('matches');
+  } catch (e) {
+    $('main').innerHTML = `<div class="card-box">データの保存領域を開けませんでした(${esc(e.message)})。プライベートブラウズでは使えない場合があります。</div>`;
+    return;
+  }
+  $$('header.app nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.go)));
+  $('#btn-export').addEventListener('click', ACT.exportAll);
+  $('#btn-import').addEventListener('change', e => { const f = e.target.files[0]; if (f) importFile(f); e.target.value = ''; });
+  window.addEventListener('beforeunload', () => { const m = curMatch(); if (m) DB.put('matches', m); });
+  window.KarutaApp = { App, DB, replay, matchStats, POEMS, STD_KIMARI };
+  render();
+})();
+</script>
+</body>
+</html>
