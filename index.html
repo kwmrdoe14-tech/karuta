@@ -207,7 +207,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25s</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25t</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -4411,6 +4411,90 @@ function kimariFromAudio(data, sr, t, yomi, k) {
 }
 
 // --- 映像 ---
+// --- 動画ファイルから直接コマを取り出す(WebCodecs) ---
+// 再生しながら取り込む方法は、ウィンドウが裏にあると止まってしまう。MP4/MOVなら、ファイルの映像データを直接デコードする。
+const RXD = { file: null, ok: false };
+function rxHevcCodec(type, d) {
+  const space = d[1] >> 6, tier = (d[1] >> 5) & 1, prof = d[1] & 31;
+  let compat = ((d[2] << 24) | (d[3] << 16) | (d[4] << 8) | d[5]) >>> 0, rev = 0;
+  for (let i = 0; i < 32; i++) { rev = (rev << 1) | (compat & 1); compat >>>= 1; }
+  const cons = [...d.slice(6, 12)]; while (cons.length && !cons[cons.length - 1]) cons.pop();
+  return `${type}.${['', 'A', 'B', 'C'][space]}${prof}.${(rev >>> 0).toString(16)}.${tier ? 'H' : 'L'}${d[12]}${cons.map(x => '.' + x.toString(16)).join('')}`;
+}
+async function rxDecoderSetup(file) {
+  if (RXD.file === file) return RXD.ok ? RXD : null;
+  Object.assign(RXD, { file, ok: false });
+  if (typeof VideoDecoder === 'undefined') return null;
+  try {
+    const boxes = await topLevelBoxes(file), mv = boxes.find(b => b.type === 'moov');
+    if (!mv || boxes.some(b => b.type === 'moof')) return null;
+    const moov = await readBytes(file, mv.start, mv.size);
+    const V = children(moov, 8, moov.length).filter(b => b.type === 'trak').map(t => trackTables(moov, t)).find(t => t.handler === 'vide');
+    if (!V || !V.sync) return null;
+    const sd = V.boxes.stsd, e0 = 16, e1 = 16 + u32(sd, 16), type = fourcc(sd, 20);
+    const w = u16(sd, e0 + 32), h = u16(sd, e0 + 34);
+    const cfgBox = t => { const p = findBytes(sd, e0 + 86, e1, t); return p < 0 ? null : sd.slice(p + 4, p - 4 + u32(sd, p - 4)); };
+    let config = null;
+    if (/^avc/.test(type)) { const d = cfgBox('avcC'); if (d) config = { codec: 'avc1.' + [d[1], d[2], d[3]].map(x => x.toString(16).padStart(2, '0')).join(''), description: d }; }
+    else if (type === 'hvc1' || type === 'hev1') { const d = cfgBox('hvcC'); if (d) config = { codec: rxHevcCodec(type, d), description: d }; }
+    else if (type === 'vp09') { const d = cfgBox('vpcC'); if (d) config = { codec: `vp09.${String(d[4]).padStart(2, '0')}.${String(d[5]).padStart(2, '0')}.${String(d[6] >> 4).padStart(2, '0')}` }; }
+    if (!config) return null;
+    Object.assign(config, { codedWidth: w, codedHeight: h });
+    const sup = await VideoDecoder.isConfigSupported(config).catch(() => ({ supported: false }));
+    if (!sup.supported) return null;
+    const vpts = i => (V.dts[i] + (V.cto ? V.cto[i] : 0) - V.mediaStart) / V.ts + V.emptyStart / 1000;
+    Object.assign(RXD, { ok: true, V, config, vpts, w, h });
+    return RXD;
+  } catch (e) { console.warn('WebCodecs準備失敗', e); return null; }
+}
+// t0〜t1 のコマを取り出す(rxCapture と同じ形で返す)
+async function rxDecodeCapture(D, file, t0, t1, tBig) {
+  const { V, vpts } = D;
+  let k0 = 0;
+  for (let i = 0; i < V.n; i++) { if (V.sync[i] && vpts(i) <= t0) k0 = i; if (V.dts[i] / V.ts > t0 + 2) break; }
+  let k1 = k0; while (k1 < V.n && V.dts[k1] / V.ts < t1 + 1) k1++;
+  const data = await readRanges(file, Array.from({ length: k1 - k0 }, (_, j) => ({ off: V.off[k0 + j], len: V.size[k0 + j] })));
+  const W = RX.W, H = Math.round(D.h * W / D.w);
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  const mk = () => { const b = document.createElement('canvas'); b.width = AT.W; b.height = Math.round(D.h * AT.W / D.w); return b; };
+  let first = null; const last = mk(); let lastT = -1;
+  const frames = [];
+  let err = null;
+  const dec = new VideoDecoder({
+    output: f => {
+      const tt = f.timestamp / 1e6;
+      if (tt >= t0 - 1e-3 && tt <= t1 + 1e-3) {
+        g.drawImage(f, 0, 0, W, H);
+        frames.push({ t: tt, ...rxGrayWhite(g.getImageData(0, 0, W, H).data, W * H) });
+        if (!first && tt >= tBig) { first = mk(); first.getContext('2d').drawImage(f, 0, 0, first.width, first.height); }
+        if (tt > lastT) { lastT = tt; last.getContext('2d').drawImage(f, 0, 0, last.width, last.height); }
+      }
+      f.close();
+    },
+    error: e => { err = e; }
+  });
+  dec.configure(D.config);
+  for (let j = 0; j < data.length && !err; j++) {
+    const i = k0 + j;
+    dec.decode(new EncodedVideoChunk({ type: V.sync[i] ? 'key' : 'delta', timestamp: Math.round(vpts(i) * 1e6), duration: Math.round(V.dur[i] / V.ts * 1e6), data: data[j] }));
+    if (dec.decodeQueueSize > 30) await new Promise(r => setTimeout(r, 0));
+  }
+  await dec.flush().catch(e => { err = err || e; });
+  dec.close();
+  if (err) throw err;
+  frames.sort((a, b) => a.t - b.t);
+  return { frames, first: first || last, last, W, H };
+}
+function rxGrayWhite(d, n) {
+  const gray = new Uint8Array(n), white = new Uint8Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const r = d[p], gg = d[p + 1], b = d[p + 2], mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+    gray[i] = (r * 77 + gg * 150 + b * 29) >> 8;
+    white[i] = mx > 150 && (mx - mn) * 255 < 30 * mx ? mx : 0; // 札の白らしい所(明るさを残す)
+  }
+  return { g: gray, w: white };
+}
 // t0〜t1 を再生しながら1コマずつ小さな白黒画像にする(最初と最後のコマは札を探すために大きめにも取る)
 function rxCapture(v, t0, t1, rate) {
   return new Promise(async resolve => {
@@ -4490,9 +4574,10 @@ async function autoReactBody(m, v, onProg, cancelled) {
   if (!reads.length) throw new Error('札が特定された読みがありません');
   // 1) 決まり字の時刻(音声)
   onProg('音声を読み込んでいます…', 0);
-  const A = await decodeVideoAudio(App.videoFile, (t, p) => onProg(t, 0.05 * (p || 0)));
+  let A = null;
+  try { A = await decodeVideoAudio(App.videoFile, (t, p) => onProg(t, 0.05 * (p || 0))); } catch (e) { console.warn('音声を取り出せません', e); }
   let nK = 0;
-  for (let i = 0; i < reads.length; i++) {
+  for (let i = 0; A && i < reads.length; i++) {
     if (cancelled()) return null;
     const r = reads[i], st = stepOf.get(r);
     const k = st?.kimariLen || STD_KIMARI[r.card]?.length;
@@ -4502,18 +4587,23 @@ async function autoReactBody(m, v, onProg, cancelled) {
   }
   // 2) 動き出し・取り(映像)
   const sc = v.videoWidth / AT.W;
-  let seamX = null, nMove = 0, nTouch = 0, rate = 2;
+  let seamX = null, nMove = 0, nTouch = 0, rate = 2, nSkip = 0;
+  let D = await rxDecoderSetup(App.videoFile);
   for (let i = 0; i < reads.length; i++) {
     if (cancelled()) return null;
     const r = reads[i], st = stepOf.get(r);
     const kt = kimariTime(r, st).t ?? r.t + 1;
     const t0 = r.t - 0.6, t1 = Math.min(r.t + 5, Math.max(r.t + 2.5, kt + 2.5));
-    let cap = await rxCapture(v, t0, t1, rate);
-    // コマが飛んでいたら等速でやり直す
-    const gaps = cap.frames.slice(1).map((f, j) => f.t - cap.frames[j].t).sort((a, b) => a - b);
-    if (rate > 1 && gaps.length && gaps[Math.floor(gaps.length * 0.9)] > 1.6 / (m.fps || 30)) { rate = 1; cap = await rxCapture(v, t0, t1, rate); }
+    let cap = null;
+    if (D) { try { cap = await rxDecodeCapture(D, App.videoFile, t0, t1, r.t - 0.3); } catch (e) { console.warn('デコード失敗→再生で取り込み', e); D = null; } }
+    if (!cap) {
+      cap = await rxCapture(v, t0, t1, rate);
+      // コマが飛んでいたら等速でやり直す
+      const gaps = cap.frames.slice(1).map((f, j) => f.t - cap.frames[j].t).sort((a, b) => a - b);
+      if (rate > 1 && gaps.length && gaps[Math.floor(gaps.length * 0.9)] > 1.6 / (m.fps || 30)) { rate = 1; cap = await rxCapture(v, t0, t1, rate); }
+    }
     const { frames, W, H } = cap, ts = frames.map(f => f.t), k = W / AT.W;
-    if (frames.length < 20) continue;
+    if (frames.length < 20) { nSkip++; continue; }
     const toBox = b => ({ x: b.x / sc, y: b.y / sc, w: b.w / sc, h: b.h / sc });
     const bx0 = visDetect(cap.first.getContext('2d').getImageData(0, 0, cap.first.width, cap.first.height)).map(b => b);
     const bx1 = visDetect(cap.last.getContext('2d').getImageData(0, 0, cap.last.width, cap.last.height));
@@ -4570,12 +4660,12 @@ async function autoReactBody(m, v, onProg, cancelled) {
     }
     onProg(`手の動きを調べています… ${i + 1} / ${reads.length}`, 0.15 + 0.85 * (i + 1) / reads.length);
   }
-  return { nK, nMove, nTouch, n: reads.length };
+  return { nK, nMove, nTouch, nSkip, n: reads.length, fast: !!D };
 }
 
 ACT.autoReact = async el => {
   const m = curMatch();
-  if (!confirm('音声と映像から、決まり字の時刻・各選手の動き出し・取った時刻を推定します(動画を少しずつ再生するので数分かかります)。\n手で記録した反応はそのまま残します。始めますか?')) return;
+  if (!confirm('音声と映像から、決まり字の時刻・各選手の動き出し・取った時刻を推定します(数分かかります)。\n手で記録した反応はそのまま残します。始めますか?')) return;
   let cancel = false;
   el.disabled = true;
   const bg = document.createElement('div');
@@ -4590,7 +4680,7 @@ ACT.autoReact = async el => {
     bg.remove();
     saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawTimelines();
     if (!res) { toast('中止しました'); return; }
-    alert(`推定しました(${res.n}件の読み):決まり字の時刻 ${res.nK}件・動き出し ${res.nMove}件・取った時刻 ${res.nTouch}件。\n各行の「反応」で確認し、違う所は動画を合わせて記録し直してください。集計は「分析」タブに出ます。`);
+    alert(`推定しました(${res.n}件の読み):決まり字の時刻 ${res.nK}件・動き出し ${res.nMove}件・取った時刻 ${res.nTouch}件。\n各行の「反応」で確認し、違う所は動画を合わせて記録し直してください。集計は「分析」タブに出ます。${res.nSkip ? `\n※${res.nSkip}件は映像を取り込めませんでした。${res.fast ? '' : 'この形式の動画は再生しながら取り込むため、推定中はこの画面を前面に出したままにしてください。'}` : ''}`);
   } catch (e) {
     console.error(e); bg.remove(); alert('推定できませんでした:' + e.message);
   } finally { el.disabled = false; }
