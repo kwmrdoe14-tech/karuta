@@ -207,7 +207,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25q</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25s</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -476,6 +476,7 @@ function replay(match) {
 // 決まり字時刻(未入力なら推定: 上の句開始 + 0.2秒×文字数)
 function kimariTime(r, st) {
   if (r.kimariT != null) return { t: r.kimariT, est: false };
+  if (r.kimariA != null) return { t: r.kimariA, est: false, auto: true }; // 音声から求めた時刻
   if (r.t == null || !st || !st.kimariLen) return { t: null, est: true };
   return { t: r.t + 0.2 * st.kimariLen + 0.1, est: true };
 }
@@ -508,6 +509,7 @@ function matchStats(match, rp = replay(match)) {
       const rc = r.react?.[p];
       if (rc && (rc.move != null || rc.touch != null) && kt.t != null) {
         S[p].react.push({ i: st.i, card: r.card, len: st.kimariLen, move: rc.move != null ? rc.move - kt.t : null,
+          first: rc.move != null && r.t != null ? rc.move - r.t : null,
           touch: rc.touch != null ? rc.touch - kt.t : null, est: kt.est, took: st.take?.side === p, onField: st.onField,
           own: st.onField ? st.fieldSide === p : null });
       }
@@ -1041,9 +1043,17 @@ function fastCutMP4(moovBytes, cuts, ftypBytes) {
   for (const [s, e] of cuts) {
     let k0 = 0;
     for (let i = 0; i < V.n; i++) { if (V.sync[i] && vpts(i) <= s + 1e-6) k0 = i; if (V.dts[i] / V.ts > s + 30) break; }
-    // 終わりは e 以降の最初のキーフレームの手前まで(Bフレームが途中で切れないように)
-    let k1 = k0 + 1;
-    while (k1 < V.n && !(V.sync[k1] && vpts(k1) >= e - 1e-6)) k1++;
+    // 終わりは、e までの映像を全部含み、かつBフレームの並びがきれいに切れる所(キーフレームを待たない)
+    // [k0, k1) に入っている札の表示時刻が、それ以降のサンプルの表示時刻より全部前になる最初の位置
+    let k1 = k0 + 1, mx = vpts(k0);
+    while (k1 < V.n) {
+      if (V.sync[k1] && mx >= e - 1e-6) break;
+      if (mx >= e - 1e-6) {
+        let mn = Infinity; for (let j = k1; j < Math.min(V.n, k1 + 16); j++) mn = Math.min(mn, vpts(j));
+        if (mn > mx) break;
+      }
+      mx = Math.max(mx, vpts(k1)); k1++;
+    }
     if (k1 <= k0) continue;
     const l = vr[vr.length - 1];
     if (l && k0 <= l[1]) l[1] = Math.max(l[1], k1); else vr.push([k0, k1]);
@@ -2782,6 +2792,7 @@ function renderEdit(body) {
       <div>
         <div class="row" style="margin-bottom:6px"><h3 style="margin:0">読みの一覧</h3><span class="muted small" id="reads-count"></span><span class="spacer"></span>
           <button class="small" data-act="autoTakes" title="映像で左右の札の枚数を数えて、取り・お手つき・送りを推定します">取りを自動推定</button>
+          <button class="small" data-act="autoReact" title="音声と映像から、決まり字の時刻・動き出し・取った時刻を推定します">反応を自動推定</button>
           <button class="small" data-act="selLayout">初期配置</button>
           <button class="small primary" data-act="addRead">＋ 今の位置に読みを追加 (R)</button></div>
         <div class="reads" id="reads"></div>
@@ -2969,9 +2980,10 @@ function drawEditor() {
   const reactRow = s => {
     const rc = r.react?.[s] || {};
     const d = x => (x != null && kt.t != null ? fmtMs(x - kt.t) : '—');
-    return `<div class="row small"><span class="dot ${s.toLowerCase()}"></span>${esc(sideName(m, s))}
-      <button class="small" data-act="markReact" data-side="${s}" data-k="move">動き出し ${rc.move != null ? fmtT(rc.move) : '記録'}</button><b>${d(rc.move)}</b>
-      <button class="small" data-act="markReact" data-side="${s}" data-k="touch">到達 ${rc.touch != null ? fmtT(rc.touch) : '記録'}</button><b>${d(rc.touch)}</b>
+    const d1 = x => (x != null && r.t != null ? fmtMs(x - r.t) : '—');
+    return `<div class="row small"><span class="dot ${s.toLowerCase()}"></span>${esc(sideName(m, s))}${rc.auto ? ' <span class="muted" data-tip="音声と映像から自動で推定した値です。記録し直すと手入力になります">推定</span>' : ''}
+      <button class="small" data-act="markReact" data-side="${s}" data-k="move">動き出し ${rc.move != null ? fmtT(rc.move) : '記録'}</button><span data-tip="1音目から / 決まり字から">1音目 <b>${d1(rc.move)}</b> 決まり字 <b>${d(rc.move)}</b></span>
+      <button class="small" data-act="markReact" data-side="${s}" data-k="touch">取り(到達) ${rc.touch != null ? fmtT(rc.touch) : '記録'}</button><span>決まり字 <b>${d(rc.touch)}</b></span>
       ${rc.move != null || rc.touch != null ? `<button class="small ghost" data-act="clearReact" data-side="${s}">×</button>` : ''}</div>`;
   };
   const needTxt = ['N', 'F'].filter(s => st.need[s]).map(s => `${esc(sideName(m, s))}が${st.need[s]}枚送る`).join('、');
@@ -3004,7 +3016,7 @@ function drawEditor() {
       <label>上の句 開始</label>
       <div class="row"><b>${fmtT(r.t)}</b><button class="small" data-act="setT">今の位置にする</button><button class="small" data-act="gotoT">ここへ移動</button></div>
       <label>決まり字時刻</label>
-      <div class="row"><b>${fmtT(kt.t)}</b>${kt.est && kt.t != null ? '<span class="muted small">(推定)</span>' : ''}<button class="small" data-act="setK">今の位置にする (K)</button>${r.kimariT != null ? '<button class="small ghost" data-act="clearK">推定に戻す</button>' : ''}</div>
+      <div class="row"><b>${fmtT(kt.t)}</b>${kt.est && kt.t != null ? '<span class="muted small">(文字数からの推定)</span>' : kt.auto ? '<span class="muted small">(音声から推定)</span>' : ''}<button class="small" data-act="setK">今の位置にする (K)</button>${r.kimariT != null ? '<button class="small ghost" data-act="clearK">推定に戻す</button>' : ''}</div>
       <label>反応</label>
       <div>${reactRow('N')}${reactRow('F')}<div class="muted small">決まり字時刻からの差(マイナス=決まり字より前に動いた)</div></div>
     </div>
@@ -3039,7 +3051,7 @@ ACT.setT = () => { const t = nowT(); if (t == null) return; const r = curRead();
 ACT.gotoT = () => seekTo(curRead().t);
 ACT.setK = () => { const t = nowT(); if (t == null) return; curRead().kimariT = t; afterReadEdit(); };
 ACT.clearK = () => { curRead().kimariT = null; afterReadEdit(); };
-ACT.markReact = el => { const t = nowT(); if (t == null) return toast('動画を開いてください'); const r = curRead(); r.react = r.react || {}; r.react[el.dataset.side] = { ...(r.react[el.dataset.side] || {}), [el.dataset.k]: t }; afterReadEdit(); };
+ACT.markReact = el => { const t = nowT(); if (t == null) return toast('動画を開いてください'); const r = curRead(); r.react = r.react || {}; r.react[el.dataset.side] = { ...(r.react[el.dataset.side] || {}), [el.dataset.k]: t }; delete r.react[el.dataset.side].auto; afterReadEdit(); };
 ACT.clearReact = el => { const r = curRead(); if (r.react) delete r.react[el.dataset.side]; afterReadEdit(); };
 ACT.toggleExclude = el => { curRead().excluded = el.checked; afterReadEdit(); };
 ACT.delRead = () => { const m = curMatch(); if (!confirm(`#${App.sel + 1} の読みを削除しますか?`)) return; m.reads.splice(App.sel, 1); App.sel = Math.min(App.sel, m.reads.length - 1); afterReadEdit(); };
@@ -3070,13 +3082,13 @@ function drawReads() {
   const m = curMatch();
   $('#reads-count').textContent = `${m.reads.length}件`;
   if (!m.reads.length) { $('#reads').innerHTML = '<div class="muted small" style="padding:12px">まだ読みがありません。左の「音声解析」で自動検出するか、動画の上の句が始まる位置で <kbd>R</kbd> を押して追加します。</div>'; return; }
-  $('#reads').innerHTML = `<table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th>反応(動き出し)</th><th></th></tr>
+  $('#reads').innerHTML = `<table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th data-tip="動き出し=1音目からの秒数 / 取=決まり字から札に手が届くまで">反応(1音目→動き出し・決まり字→取り)</th><th></th></tr>
   ${m.reads.map((r, i) => {
     const st = RP.steps[i];
     const lowAsr = r.card == null || (r.cand && r.cand[0] && r.cand[0][1] < 0.5 && r.cand[0][0] === r.card && !r.checked);
     const low = lowAsr || (r.autoTake && r.autoTake.conf !== 'ok');
     const kt = kimariTime(r, st);
-    const rx = s => (r.react?.[s]?.move != null && kt.t != null ? `<span class="dot ${s.toLowerCase()}"></span>${fmtMs(r.react[s].move - kt.t)}` : '');
+    const rx = s => { const rc = r.react?.[s]; if (!rc) return ''; const a = rc.move != null ? fmtMs(rc.move - r.t) : ''; const b = rc.touch != null && kt.t != null ? ` 取${fmtMs(rc.touch - kt.t)}` : ''; return a || b ? `<span class="dot ${s.toLowerCase()}"></span>${a}${b}` : ''; };
     return `<tr data-i="${i}" class="${i === App.sel ? 'sel' : ''} ${low ? 'low' : ''}">
       <td class="muted">${i + 1}</td><td class="num">${fmtT(r.t)}</td>
       <td><b>${r.card === 0 ? '序歌' : r.card ? (st.kimari || STD_KIMARI[r.card]) : '未確定'}</b>${lowAsr && r.card != null ? ' <span data-tip="音声認識の確信度が低めです">?</span>' : ''}</td>
@@ -3419,7 +3431,7 @@ function cutPanelHTML(m) {
       <label>この秒数より短い無音は省かない <input type="number" step="0.5" min="0" value="${c.gap}" data-act="cutSet" data-k="gap"></label>
       <label><input type="checkbox" data-act="cutSet" data-k="jo" ${c.jo ? 'checked' : ''}> 序歌を含める</label>
     </div>
-    <div class="small" id="cut-info">${cuts.length ? `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)` : '<span class="muted">音声解析①を実行するとカット区間ができます</span>'}</div>
+    <div class="small" id="cut-info">${cuts.length ? cutInfoHTML(m, cuts, total) : '<span class="muted">音声解析①を実行するとカット区間ができます</span>'}</div>
     <div class="row">
       <button data-act="cutPlay">カット再生 ${App.cutMode ? 'を止める' : ''}</button>
       <button class="primary" data-act="cutExport" ${cuts.length ? '' : 'disabled'}>カット動画を書き出す</button>
@@ -3435,8 +3447,32 @@ ACT.cutSet = el => {
   saveMatch(m); drawTimelines();
   if (k === 'mode') { const d = el.closest('details'); if (d) { d.outerHTML = cutPanelHTML(m); const nd = $$('details.panel').find(x => x.querySelector('[data-k=mode]')); if (nd) { nd.open = true; bindCommon(nd); } } return; }
   const cuts = computeCuts(m), total = cuts.reduce((a, x) => a + x[1] - x[0], 0), info = $('#cut-info');
-  if (info) info.innerHTML = `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)`;
+  if (info) info.innerHTML = cutInfoHTML(m, cuts, total);
 };
+// 書き出したときの実際の長さ(各区間がキーフレームから始まるため、指定より長くなる)
+const CUTLEN = { file: null, moov: null, ftyp: null, key: '', val: null };
+function cutInfoHTML(m, cuts, total) {
+  setTimeout(() => updateRealCutLen(m, cuts, total), 0);
+  return `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)<span id="cut-real"></span>`;
+}
+async function updateRealCutLen(m, cuts, total) {
+  const f = App.videoFile; if (!f || !cuts.length) return;
+  try {
+    if (CUTLEN.file !== f) {
+      CUTLEN.file = f; CUTLEN.moov = null;
+      const boxes = await topLevelBoxes(f), mv = boxes.find(b => b.type === 'moov'), fb = boxes.find(b => b.type === 'ftyp');
+      if (!mv || boxes.some(b => b.type === 'moof')) return;
+      CUTLEN.moov = await readBytes(f, mv.start, mv.size);
+      CUTLEN.ftyp = fb && fb.size < 4096 ? await readBytes(f, fb.start, fb.size) : null;
+    }
+    if (!CUTLEN.moov) return;
+    const real = fastCutMP4(CUTLEN.moov, cuts, CUTLEN.ftyp).duration, el = $('#cut-real');
+    if (!el) return;
+    const extra = real - total;
+    el.innerHTML = extra > 1 ? ` ・書き出すと <b>約${fmtT(real)}</b>` + (extra / cuts.length > 2
+      ? `<div class="small" style="color:var(--warn)">この動画はキーフレームの間隔が長く、各区間が指定より平均${(extra / cuts.length).toFixed(1)}秒前から始まります(区間をまたいで重なる所はまとめます)。キーフレームを1秒ごとにして変換した動画を使うと、表示どおりの長さに近づきます。</div>` : '') : '';
+  } catch (e) { /* 高速書き出しに対応しない形式 */ }
+}
 function computeCuts(m) {
   const c = { ...cutDefaults(m), ...(m.cut || {}) };
   const rp = RP || replay(m);
@@ -3660,7 +3696,8 @@ function analysisHTML(m) {
     const byLen = {};
     R.forEach(r => { if (r.move != null && r.len) (byLen[r.len] = byLen[r.len] || []).push(r.move); });
     return `<div><div class="row"><span class="dot ${s.toLowerCase()}"></span><b>${esc(sideName(m, s))}</b><span class="muted small">${R.length}回記録</span></div>
-      <div class="row" style="gap:20px;margin:6px 0"><div><div class="muted small">動き出し 平均</div><b style="font-size:20px">${fmtMs(mean(mv))}</b></div><div><div class="muted small">到達 平均</div><b style="font-size:20px">${fmtMs(mean(tc))}</b></div>
+      <div class="row" style="gap:20px;margin:6px 0"><div><div class="muted small">1音目→動き出し 平均</div><b style="font-size:20px">${fmtMs(mean(R.map(r => r.first).filter(x => x != null)))}</b></div><div><div class="muted small">決まり字→取り 平均</div><b style="font-size:20px">${fmtMs(mean(R.filter(r => r.took).map(r => r.touch).filter(x => x != null)))}</b></div></div>
+      <div class="row" style="gap:20px;margin:6px 0"><div><div class="muted small">決まり字→動き出し 平均</div><b style="font-size:20px">${fmtMs(mean(mv))}</b></div>
       <div><div class="muted small">取れた時の動き出し</div><b style="font-size:20px">${fmtMs(mean(R.filter(r => r.took && r.move != null).map(r => r.move)))}</b></div></div>
       ${Object.keys(byLen).length ? `<table class="t"><tr><th>決まり字</th><th class="num">回数</th><th class="num">動き出し平均</th></tr>${Object.keys(byLen).sort().map(L => `<tr><td>${L}字</td><td class="num">${byLen[L].length}</td><td class="num">${fmtMs(mean(byLen[L]))}</td></tr>`).join('')}</table>` : ''}
     </div>`;
@@ -3668,11 +3705,11 @@ function analysisHTML(m) {
   const anyReact = S.N.react.length + S.F.react.length;
   const slider = (k, label, min, max, step, val, hint) => `<div class="slider-row"><span>${label}${hint ? ` <span class="muted small" data-tip="${esc(hint)}">ⓘ</span>` : ''}</span><input type="range" min="${min}" max="${max}" step="${step}" value="${val}" data-act="simParam" data-k="${k}"><span class="small">${val}</span></div>`;
   return `<div class="stack">
-    <div class="card-box"><h3>反応時間(決まり字が読まれてから手が動くまで)</h3>
+    <div class="card-box"><h3>反応時間</h3>
       ${anyReact ? `<div class="grid2">${reactCard('N')}${reactCard('F')}</div>
         <div style="margin-top:12px">${lineChart(['N', 'F'].map(s => ({ name: sideName(m, s) + ' 動き出し', color: `var(--${s === 'N' ? 'near' : 'far'})`, pts: S[s].react.filter(r => r.move != null).map(r => ({ x: r.i + 1, y: Math.round(r.move * 1000), tip: `#${r.i + 1} ${r.card ? STD_KIMARI[r.card] : ''}(${r.len}字) ${esc(sideName(m, s))} ${fmtMs(r.move)}${r.took ? ' 取り' : ''}${r.est ? ' ※決まり字時刻は推定' : ''}` })) })).map(x => ({ ...x, pts: x.pts })), { yLabel: 'ms', refY: 0, xFmt: v => '#' + v, noLine: true, w: 1000, h: 240 })}</div>
-        <div class="muted small">0ms = 決まり字の時刻。マイナスは決まり字より前に動き出したことを表します。決まり字時刻を記録していない読みは「上の句開始+0.2秒×字数」で推定しています。</div>`
-      : '<div class="muted small">編集タブで、動画をコマ送りしながら <kbd>1</kbd>(左の選手の動き出し)<kbd>2</kbd>(左の選手の到達)<kbd>9</kbd><kbd>0</kbd>(右の選手)を押すと記録できます。決まり字の時刻は <kbd>K</kbd> で正確に合わせられます。</div>'}
+        <div class="muted small">0ms = 決まり字の時刻。マイナスは決まり字より前に動き出したことを表します。決まり字の時刻は、手で合わせた値→音声からの推定(「反応を自動推定」)→「上の句開始+0.2秒×字数」の順に使います。</div>`
+      : '<div class="muted small">編集タブの「反応を自動推定」で、音声と映像から自動で記録できます。手で記録するときは、動画をコマ送りしながら <kbd>1</kbd>(左の選手の動き出し)<kbd>2</kbd>(左の選手の到達)<kbd>9</kbd><kbd>0</kbd>(右の選手)を押すと記録できます。決まり字の時刻は <kbd>K</kbd> で正確に合わせられます。</div>'}
     </div>
     <div class="card-box"><div class="row"><h3 style="margin:0">勝率の推移</h3><span class="spacer"></span><button class="primary" data-act="runWinProb">計算する</button></div>
       <div id="wp-out" style="margin-top:8px">${cache.wp ? winProbChart(m, cache.wp) : '<div class="muted small">各読みの後の盤面から残りの試合を何百回もシミュレーションし、左の選手の勝率を出します。将棋の評価値グラフのように、流れが変わった読みがわかります。</div>'}</div>
@@ -4265,6 +4302,295 @@ ACT.autoTakes = async el => {
     if (!res) { toast('中止しました'); return; }
     const warn = Math.abs(res.cnt0[0] - res.lay.N) > 1 || Math.abs(res.cnt0[1] - res.lay.F) > 1 ? `\n※試合開始時の映像で数えた枚数(左${res.cnt0[0]}・右${res.cnt0[1]})が初期配置(左${res.lay.N}・右${res.lay.F})と違いました。` : '';
     alert(`推定しました:取り ${res.nTake}件・お手つき ${res.nFault}件・送り ${res.nSend}件・並べ替え ${res.nMove}件。\n黄色の行(${res.nUnsure}件)は映像で確認してください。${res.nMis ? `\nうち${res.nMis}件は、空札として特定されているのに映像では札が減っていました(札の特定違いかもしれません。取りの欄に「札?」と出ます)。` : ''}${warn}`);
+  } catch (e) {
+    console.error(e); bg.remove(); alert('推定できませんでした:' + e.message);
+  } finally { el.disabled = false; }
+};
+
+// ===== 反応の自動推定(決まり字の時刻・動き出し・取り) =====
+// 1) 決まり字の時刻:読みの音声を 10ms ごとの音色(メル周波数)に分け、音が切り替わる所(子音など)を拾う。
+//    札の読み(ひらがな)の1音ずつを、その切り替わりに順番に当てはめ(強い子音 か・さ・た・は行など は大きな切り替わりに)、
+//    決まり字の最後の音が始まる時刻を求める。
+// 2) 動き出し:読みの前後の映像を 1コマずつ見て、各選手の側(自分の札より外側=体と手のある所)の動きが始まる時刻。
+// 3) 取り:読みの後になくなった札の枠のうち、最初に手がかかって(画像が大きく変わって)きた時刻。
+const RX = { W: 480 };
+
+// --- 音声 ---
+function rxFFT(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const a = -2 * Math.PI / len, wr = Math.cos(a), wi = Math.sin(a);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let j = 0; j < len / 2; j++) {
+        const ur = re[i + j], ui = im[i + j], k = i + j + len / 2;
+        const vr = re[k] * cr - im[k] * ci, vi = re[k] * ci + im[k] * cr;
+        re[i + j] = ur + vr; im[i + j] = ui + vi; re[k] = ur - vr; im[k] = ui - vi;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+let RX_MEL = null;
+function rxMel(sr) {
+  if (RX_MEL) return RX_MEL;
+  const n = 40, nf = 257, m = h => 2595 * Math.log10(1 + h / 700), im = v => 700 * (10 ** (v / 2595) - 1);
+  const pts = []; for (let i = 0; i < n + 2; i++) pts.push(im(m(60) + (m(6000) - m(60)) * i / (n + 1)));
+  RX_MEL = [];
+  for (let i = 0; i < n; i++) {
+    const [a, b, c] = [pts[i], pts[i + 1], pts[i + 2]], w = new Float32Array(nf);
+    for (let k = 0; k < nf; k++) { const f = k * sr / 512; w[k] = Math.max(0, Math.min((f - a) / (b - a), (c - f) / (c - b))); }
+    RX_MEL.push(w);
+  }
+  return RX_MEL;
+}
+// 音の切り替わりの強さ(10msごと)
+function rxNovelty(data, sr, t0, dur) {
+  const hop = Math.round(sr * 0.01), T = Math.round(dur / 0.01), mel = rxMel(sr), scale = data instanceof Int16Array ? 1 / 32768 : 1;
+  const win = new Float32Array(400); for (let i = 0; i < 400; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / 400);
+  const M = [];
+  const re = new Float64Array(512), im = new Float64Array(512);
+  for (let k = 0; k < T; k++) {
+    const c = Math.round(t0 * sr) + k * hop - 200;
+    re.fill(0); im.fill(0);
+    for (let i = 0; i < 400; i++) { const p = c + i; re[i] = p >= 0 && p < data.length ? data[p] * scale * win[i] : 0; }
+    rxFFT(re, im);
+    const row = new Float32Array(40);
+    for (let b = 0; b < 40; b++) { let s = 0; const w = mel[b]; for (let q = 0; q < 257; q++) if (w[q]) s += w[q] * (re[q] * re[q] + im[q] * im[q]); row[b] = Math.log(s + 1e-8); }
+    M.push(row);
+  }
+  const nov = new Float32Array(T);
+  for (let j = 0; j + 3 < T; j++) { let s = 0; for (let b = 0; b < 40; b++) s += Math.max(0, M[j + 3][b] - M[j][b]); nov[j + 2] = s; }
+  const sm = new Float32Array(T);
+  for (let j = 0; j < T; j++) sm[j] = (nov[Math.max(0, j - 1)] + nov[j] + nov[Math.min(T - 1, j + 1)]) / 3;
+  return sm;
+}
+const RX_STRONG = new Set('かきくけこがぎぐげごさしすせそざじずぜぞたちつてとだでどはひふへほばびぶべぼぱぴぷぺぽっ');
+function rxMoras(y) { const out = []; for (const ch of y) { if ('ゃゅょぁぃぅぇぉ'.includes(ch) && out.length) continue; out.push(ch); } return out; }
+// 決まり字の最後の音が始まる時刻(上の句の読み始め t からの秒数)。求められなければ null
+function kimariFromAudio(data, sr, t, yomi, k) {
+  if (!yomi || !k) return null;
+  const Ms = rxMoras(yomi).slice(0, Math.max(k + 2, 6)), n = Ms.length;
+  if (k === 1) return 0;
+  const nov = rxNovelty(data, sr, t, 4.0), T = nov.length;
+  const srt = Float32Array.from(nov).sort(), med = srt[T >> 1] + 1e-6;
+  // 山(近すぎる山は高いほうを残す)
+  const cand = [];
+  for (let j = 1; j < T - 1; j++) if (nov[j] > nov[j - 1] && nov[j] >= nov[j + 1]) cand.push(j);
+  cand.sort((a, b) => nov[b] - nov[a]);
+  const pk = new Uint8Array(T), taken = [];
+  for (const j of cand) if (taken.every(q => Math.abs(q - j) >= 6)) { taken.push(j); pk[j] = 1; }
+  const str = new Float32Array(T); for (let j = 0; j < T; j++) if (pk[j]) str[j] = Math.log1p(nov[j] / med);
+  const cs = new Float32Array(T + 1); for (let j = 0; j < T; j++) cs[j + 1] = cs[j] + (str[j] > Math.log1p(4) ? str[j] : 0);
+  const NEG = -1e9, dp = [], bk = [];
+  for (let j = 0; j < n; j++) { dp.push(new Float32Array(T).fill(NEG)); bk.push(new Int16Array(T)); }
+  dp[0][0] = 0;
+  for (let j = 1; j < n; j++) {
+    const strong = RX_STRONG.has(Ms[j]);
+    for (let f = 10; f < T; f++) {
+      const e = pk[f] ? (strong ? 2.0 : 0.4) * str[f] : (strong ? -1.5 : -0.2);
+      let best = NEG, arg = 0;
+      for (let g = Math.max(0, f - 160); g < f - 9; g++) {
+        const p = dp[j - 1][g]; if (p <= NEG / 2) continue;
+        const d = (f - g) * 0.01, lg = Math.log(d / 0.4);
+        const v = p - lg * lg / (2 * 0.25) - 1.2 * (cs[f] - cs[g + 1]);
+        if (v > best) { best = v; arg = g; }
+      }
+      if (best > NEG / 2) { dp[j][f] = best + e; bk[j][f] = arg; }
+    }
+  }
+  let f = 0, bv = NEG; for (let q = 0; q < T; q++) if (dp[n - 1][q] > bv) { bv = dp[n - 1][q]; f = q; }
+  if (bv <= NEG / 2) return null;
+  const b = new Array(n);
+  for (let j = n - 1; j >= 0; j--) { b[j] = f; f = bk[j][f]; }
+  return b[Math.min(k, n) - 1] * 0.01;
+}
+
+// --- 映像 ---
+// t0〜t1 を再生しながら1コマずつ小さな白黒画像にする(最初と最後のコマは札を探すために大きめにも取る)
+function rxCapture(v, t0, t1, rate) {
+  return new Promise(async resolve => {
+    await atSeek(v, t0);
+    const W = RX.W, H = Math.round(v.videoHeight * W / v.videoWidth);
+    const c = document.createElement('canvas'); c.width = W; c.height = H;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    const frames = []; let first = null, last = null, done = false;
+    const big = () => atGrab(v, AT.W);
+    const fin = () => { if (done) return; done = true; v.pause(); v.playbackRate = 1; clearTimeout(to); resolve({ frames, first, last, W, H }); };
+    const to = setTimeout(() => { last = last || big(); fin(); }, (t1 - t0) / rate * 1000 + 8000);
+    const cb = (now, md) => {
+      if (done) return;
+      const tt = md.mediaTime;
+      g.drawImage(v, 0, 0, W, H);
+      const d = g.getImageData(0, 0, W, H).data, gray = new Uint8Array(W * H), white = new Uint8Array(W * H);
+      for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
+        const r = d[p], gg = d[p + 1], b = d[p + 2], mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+        gray[i] = (r * 77 + gg * 150 + b * 29) >> 8;
+        white[i] = mx > 150 && (mx - mn) * 255 < 30 * mx ? mx : 0; // 札の白らしい所(明るさを残す)
+      }
+      frames.push({ t: tt, g: gray, w: white });
+      if (!first) first = big();
+      if (tt >= t1 || v.ended) { last = big(); fin(); } else v.requestVideoFrameCallback(cb);
+    };
+    v.muted = true; v.playbackRate = rate;
+    v.requestVideoFrameCallback(cb);
+    v.play().catch(() => fin());
+  });
+}
+// ある範囲の画素のうち、2コマ前から変わった割合
+function rxDiffSeries(frames, W, x0, x1, y0, y1, lag = 2, thr = 14) {
+  const out = new Float32Array(frames.length);
+  const xs = Math.max(0, Math.floor(x0)), xe = Math.min(W, Math.ceil(x1)), ys = Math.max(0, Math.floor(y0)), ye = Math.ceil(y1);
+  const n = Math.max(1, (xe - xs) * (ye - ys));
+  for (let j = lag; j < frames.length; j++) {
+    const a = frames[j].g, b = frames[j - lag].g; let c = 0;
+    for (let y = ys; y < ye; y++) { const o = y * W; for (let x = xs; x < xe; x++) if (Math.abs(a[o + x] - b[o + x]) > thr) c++; }
+    out[j] = c / n;
+  }
+  return out;
+}
+function rxOnset(ts, d, t) {
+  const base = []; ts.forEach((x, j) => { if (x >= t - 0.55 && x < t + 0.1) base.push(d[j]); });
+  if (base.length < 5) return null;
+  const mu = base.reduce((a, b) => a + b, 0) / base.length, sd = Math.sqrt(base.reduce((a, b) => a + (b - mu) ** 2, 0) / base.length);
+  // 小さな揺れ(頭や肩が少し動く)ではなく、その読みでの大きな動きの始まりを取る
+  let peak = 0; ts.forEach((x, j) => { if (x > t && d[j] > peak) peak = d[j]; });
+  if (peak < 0.03) return null;
+  const thr = Math.max(Math.max(...base) * 1.5, mu + 0.004, 0.03, 0.4 * peak), lo = Math.max(mu + 2 * sd + 0.001, 0.5 * thr);
+  for (let j = 0; j + 2 < d.length; j++) {
+    if (ts[j] <= t + 0.1 || !(d[j] > thr && d[j + 1] > thr && d[j + 2] > thr)) continue;
+    let k = j;
+    while (k > 0 && d[k - 1] > lo && ts[k - 1] > t) k--;
+    return ts[k];
+  }
+  return null;
+}
+const rxIoU = (a, b) => {
+  const x0 = Math.max(a.x, b.x), y0 = Math.max(a.y, b.y), x1 = Math.min(a.x + a.w, b.x + b.w), y1 = Math.min(a.y + a.h, b.y + b.h);
+  const i = Math.max(0, x1 - x0) * Math.max(0, y1 - y0); return i / (a.w * a.h + b.w * b.h - i);
+};
+
+async function autoReact(m, onProg, cancelled) {
+  const v = vid();
+  if (!v || !v.videoWidth) throw new Error('映像が表示できる動画を開いてください');
+  if (!App.videoFile) throw new Error('動画を開いてください');
+  v.pause();
+  const wasMuted = v.muted;
+  try { return await autoReactBody(m, v, onProg, cancelled); } finally { v.muted = wasMuted; }
+}
+async function autoReactBody(m, v, onProg, cancelled) {
+  const rp = replay(m);
+  const stepOf = new Map(rp.steps.map(s => [s.read, s]));
+  const reads = m.reads.filter(r => r.t != null && r.card > 0).sort((a, b) => a.t - b.t)
+    .filter(r => rp.winnerAt == null || rp.steps.indexOf(stepOf.get(r)) <= rp.winnerAt);
+  if (!reads.length) throw new Error('札が特定された読みがありません');
+  // 1) 決まり字の時刻(音声)
+  onProg('音声を読み込んでいます…', 0);
+  const A = await decodeVideoAudio(App.videoFile, (t, p) => onProg(t, 0.05 * (p || 0)));
+  let nK = 0;
+  for (let i = 0; i < reads.length; i++) {
+    if (cancelled()) return null;
+    const r = reads[i], st = stepOf.get(r);
+    const k = st?.kimariLen || STD_KIMARI[r.card]?.length;
+    const d = kimariFromAudio(A.data, A.sr, r.t, POEMS[r.card].yomiFlat, k);
+    if (d != null) { r.kimariA = r.t + d; nK++; } else delete r.kimariA;
+    if (i % 8 === 0) { onProg(`決まり字の時刻を求めています… ${i + 1} / ${reads.length}`, 0.05 + 0.1 * (i + 1) / reads.length); await new Promise(res => setTimeout(res, 0)); }
+  }
+  // 2) 動き出し・取り(映像)
+  const sc = v.videoWidth / AT.W;
+  let seamX = null, nMove = 0, nTouch = 0, rate = 2;
+  for (let i = 0; i < reads.length; i++) {
+    if (cancelled()) return null;
+    const r = reads[i], st = stepOf.get(r);
+    const kt = kimariTime(r, st).t ?? r.t + 1;
+    const t0 = r.t - 0.6, t1 = Math.min(r.t + 5, Math.max(r.t + 2.5, kt + 2.5));
+    let cap = await rxCapture(v, t0, t1, rate);
+    // コマが飛んでいたら等速でやり直す
+    const gaps = cap.frames.slice(1).map((f, j) => f.t - cap.frames[j].t).sort((a, b) => a - b);
+    if (rate > 1 && gaps.length && gaps[Math.floor(gaps.length * 0.9)] > 1.6 / (m.fps || 30)) { rate = 1; cap = await rxCapture(v, t0, t1, rate); }
+    const { frames, W, H } = cap, ts = frames.map(f => f.t), k = W / AT.W;
+    if (frames.length < 20) continue;
+    const toBox = b => ({ x: b.x / sc, y: b.y / sc, w: b.w / sc, h: b.h / sc });
+    const bx0 = visDetect(cap.first.getContext('2d').getImageData(0, 0, cap.first.width, cap.first.height)).map(b => b);
+    const bx1 = visDetect(cap.last.getContext('2d').getImageData(0, 0, cap.last.width, cap.last.height));
+    if (seamX == null && bx0.length >= 10) seamX = visGap(bx0, 0);
+    const seam = seamX ?? AT.W / 2;
+    r.react = r.react || {};
+    const moves = {};
+    for (const s of ['N', 'F']) {
+      const B = bx0.filter(b => (b.x + b.w / 2 < seam) === (s === 'N'));
+      // 自分の札より外側(体と手のある所)+札の外側3割
+      let x0, x1;
+      if (s === 'N') { const xo = B.length ? Math.min(...B.map(b => b.x)) : seam - 200; x0 = 0; x1 = xo + (seam - xo) * 0.3; }
+      else { const xo = B.length ? Math.max(...B.map(b => b.x + b.w)) : seam + 200; x0 = xo - (xo - seam) * 0.3; x1 = AT.W; }
+      const d = rxDiffSeries(frames, W, x0 * k, x1 * k, 0, H);
+      moves[s] = rxOnset(ts, d, r.t);
+    }
+    // 取り:札が払われて動いた瞬間。取られた札のある側・上下の範囲で、もともと札のなかった所に札の白が現れた最初のコマ
+    // (手をかざしているだけでは白は現れないので、囲い手と区別できる)
+    let touch = null;
+    if (st?.take && st.slot) {
+      const midY = visGap(bx0, 1) ?? cap.first.height / 2;
+      const top = (st.fieldSide === 'N' ? st.slot.col : 11 - st.slot.col) < 6;
+      const mine = bx0.filter(b => (b.x + b.w / 2 < seam) === (st.fieldSide === 'N') && (b.y + b.h / 2 < midY) === top);
+      if (mine.length) {
+        const cw = mine.map(b => b.w).sort((a, b) => a - b)[mine.length >> 1];
+        const sN = st.fieldSide === 'N';
+        const rx0 = Math.max(0, (sN ? Math.min(...mine.map(b => b.x)) - cw * 0.7 : seam) * k), rx1 = Math.min(W, (sN ? seam : Math.max(...mine.map(b => b.x + b.w)) + cw * 0.7) * k);
+        const ry0 = Math.max(0, (Math.min(...mine.map(b => b.y)) - cw * 1.5) * k), ry1 = Math.min(H, (Math.max(...mine.map(b => b.y + b.h)) + cw * 1.5) * k);
+        // もともと札があった所(少し広げる)は数えない
+        const occ = new Uint8Array(W * H), pad = 3;
+        for (const b of bx0) for (let y = Math.max(0, Math.floor(b.y * k) - pad); y < Math.min(H, Math.ceil((b.y + b.h) * k) + pad); y++) for (let x = Math.max(0, Math.floor(b.x * k) - pad); x < Math.min(W, Math.ceil((b.x + b.w) * k) + pad); x++) occ[y * W + x] = 1;
+        const cardPx = mine.map(b => b.w * b.h * k * k).sort((a, b) => a - b)[mine.length >> 1];
+        // 札の明るさ(読みの前のコマで、札の枠の中の明るさの中央値)より少し暗いところまでを「札の白」とする
+        const f0 = frames[0], vals = [];
+        for (const b of mine) { const cx = Math.round((b.x + b.w / 2) * k), cy = Math.round((b.y + b.h / 2) * k); for (let dy = -1; dy <= 1; dy++) for (let dx = -2; dx <= 2; dx++) { const v = f0.w[(cy + dy) * W + cx + dx]; if (v) vals.push(v); } }
+        vals.sort((a, b) => a - b);
+        const vth = vals.length ? vals[vals.length >> 1] - 30 : 190;
+        const count = f => { let c = 0; for (let y = Math.floor(ry0); y < ry1; y++) for (let x = Math.floor(rx0); x < rx1; x++) { const i = y * W + x; if (f.w[i] > vth && !occ[i]) c++; } return c; };
+        const base = frames.filter(f => f.t < r.t).map(count).sort((a, b) => a - b);
+        const b0 = base.length ? base[Math.floor(base.length * 0.9)] : 0;
+        for (let j = 0; j + 1 < frames.length; j++) {
+          const f = frames[j]; if (f.t <= r.t) continue;
+          if (count(f) - b0 > cardPx * 0.25 && count(frames[j + 1]) - b0 > cardPx * 0.25) { touch = frames[Math.max(0, j - 1)].t; break; }
+        }
+      }
+    }
+    for (const s of ['N', 'F']) {
+      const cur = r.react[s];
+      if (cur && !cur.auto && (cur.move != null || cur.touch != null)) continue; // 手で記録した値は残す
+      const rec = {};
+      if (moves[s] != null) { rec.move = moves[s]; nMove++; }
+      if (touch != null && st?.take?.side === s) { rec.touch = touch; nTouch++; }
+      if (rec.move != null || rec.touch != null) r.react[s] = { ...rec, auto: true }; else delete r.react[s];
+    }
+    onProg(`手の動きを調べています… ${i + 1} / ${reads.length}`, 0.15 + 0.85 * (i + 1) / reads.length);
+  }
+  return { nK, nMove, nTouch, n: reads.length };
+}
+
+ACT.autoReact = async el => {
+  const m = curMatch();
+  if (!confirm('音声と映像から、決まり字の時刻・各選手の動き出し・取った時刻を推定します(動画を少しずつ再生するので数分かかります)。\n手で記録した反応はそのまま残します。始めますか?')) return;
+  let cancel = false;
+  el.disabled = true;
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal" style="width:min(520px,94vw)"><div class="mh"><b>反応の自動推定</b><span class="spacer"></span><button data-v="cancel">中止</button></div>
+    <div class="mb"><div class="small at-msg">準備しています…</div><div class="vis-bar" style="width:100%;margin-top:8px"><i class="at-bar" style="width:0%"></i></div></div></div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('[data-v=cancel]').onclick = () => { cancel = true; };
+  const prog = (t, p) => { bg.querySelector('.at-msg').textContent = t; if (p != null) bg.querySelector('.at-bar').style.width = Math.round(p * 100) + '%'; };
+  try {
+    const res = await autoReact(m, prog, () => cancel);
+    bg.remove();
+    saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawTimelines();
+    if (!res) { toast('中止しました'); return; }
+    alert(`推定しました(${res.n}件の読み):決まり字の時刻 ${res.nK}件・動き出し ${res.nMove}件・取った時刻 ${res.nTouch}件。\n各行の「反応」で確認し、違う所は動画を合わせて記録し直してください。集計は「分析」タブに出ます。`);
   } catch (e) {
     console.error(e); bg.remove(); alert('推定できませんでした:' + e.message);
   } finally { el.disabled = false; }
