@@ -207,7 +207,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25n</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25o</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -3773,7 +3773,7 @@ function sendEvalHTML(m, res) {
 // ===== 取り・お手つき・送りの自動推定(映像で左右の札の枚数を数える) =====
 // 取った選手は、自陣から取っても敵陣から取って1枚送っても、自分の札が必ず1枚減る。
 // 読みと読みの間の落ち着いた場面で左右の枚数を数え、全体として一番つじつまの合う取りの並びを求める(ビタビ法)。
-// 送った札は、札の位置を読みごとに追いかけ(消えた札・現れた札)、試合前の映像から作った札の見本とも見比べて推定する。
+// 送った札は、札の見た目(書かれている字の形)を試合前の映像から作った見本と照合して推定する(位置は使わない)。
 const AT = { W: 1280 };
 function atSeek(v, t) {
   return new Promise(res => {
@@ -3811,6 +3811,103 @@ function atSizeFit(bx, sc) {
     return rw > 0.7 && rw < 1.35 && rh > 0.7 && rh < 1.4;
   };
 }
+// ----- 札の見た目で照合する(送りの推定用) -----
+// 札を縦向きにして余白つきで 69×96 に切り出し、墨の濃さ(周りより暗い分)の画像にして、
+// 少しずらしながら相関(正規化相互相関)を取る。位置ではなく見た目で札を見分けるので、並べ替えられても追える。
+const AM = { W: 69, H: 96, TX: 13, TY: 18, TW: 43, TH: 60, SH: 4 };
+function amCrop(src, b) {
+  const px = b.w * 0.15, py = b.h * 0.15;
+  const c = document.createElement('canvas');
+  c.width = AM.W; c.height = AM.H;
+  const g = c.getContext('2d');
+  g.imageSmoothingQuality = 'high';
+  g.translate(AM.W / 2, AM.H / 2);
+  g.rotate(b.side === 'F' ? Math.PI / 2 : -Math.PI / 2);
+  g.drawImage(src, b.x - px, b.y - py, b.w + 2 * px, b.h + 2 * py, -AM.H / 2, -AM.W / 2, AM.H, AM.W);
+  const d = g.getImageData(0, 0, AM.W, AM.H).data, out = new Uint8Array(AM.W * AM.H);
+  for (let i = 0, p = 0; i < out.length; i++, p += 4) out[i] = (0.299 * d[p] + 0.587 * d[p + 1] + 0.114 * d[p + 2]) | 0;
+  return out;
+}
+function amBlur(a, W, H, s) {
+  const r = Math.ceil(s * 3), k = [];
+  let ks = 0; for (let i = -r; i <= r; i++) { const v = Math.exp(-i * i / (2 * s * s)); k.push(v); ks += v; }
+  for (let i = 0; i < k.length; i++) k[i] /= ks;
+  const t = new Float32Array(W * H), o = new Float32Array(W * H);
+  const cl = (v, n) => v < 0 ? -v : v >= n ? 2 * n - 2 - v : v; // 端は折り返し
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let s2 = 0; for (let j = -r; j <= r; j++) s2 += a[y * W + cl(x + j, W)] * k[j + r]; t[y * W + x] = s2; }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let s2 = 0; for (let j = -r; j <= r; j++) s2 += t[cl(y + j, H) * W + x] * k[j + r]; o[y * W + x] = s2; }
+  return o;
+}
+function amInk(gray) {
+  const W = AM.W, H = AM.H, f = Float32Array.from(gray), bg = amBlur(f, W, H, 6);
+  for (let i = 0; i < f.length; i++) f[i] = Math.max(0, bg[i] - f[i]);
+  const ink = amBlur(f, W, H, 0.8);
+  // 窓の和を速く求めるための積分画像
+  const I1 = new Float64Array((W + 1) * (H + 1)), I2 = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) { let r1 = 0, r2 = 0; for (let x = 0; x < W; x++) { const v = ink[y * W + x]; r1 += v; r2 += v * v; I1[(y + 1) * (W + 1) + x + 1] = I1[y * (W + 1) + x + 1] + r1; I2[(y + 1) * (W + 1) + x + 1] = I2[y * (W + 1) + x + 1] + r2; } }
+  return { ink, I1, I2 };
+}
+function amTemplate(ink) {
+  const n = AM.TW * AM.TH, t = new Float32Array(n);
+  let m = 0;
+  for (let y = 0; y < AM.TH; y++) for (let x = 0; x < AM.TW; x++) { const v = ink.ink[(y + AM.TY) * AM.W + x + AM.TX]; t[y * AM.TW + x] = v; m += v; }
+  m /= n; let nn = 0;
+  for (let i = 0; i < n; i++) { t[i] -= m; nn += t[i] * t[i]; }
+  return { t, norm: Math.sqrt(nn) || 1 };
+}
+function amNccAt(im, T, dx, dy) {
+  const W = AM.W, x0 = AM.TX + dx, y0 = AM.TY + dy, tw = AM.TW, th = AM.TH, n = tw * th, W1 = W + 1;
+  const box = A => A[(y0 + th) * W1 + x0 + tw] - A[y0 * W1 + x0 + tw] - A[(y0 + th) * W1 + x0] + A[y0 * W1 + x0];
+  const s1 = box(im.I1), s2 = box(im.I2), vr = s2 - s1 * s1 / n;
+  if (vr <= 1e-6) return -1;
+  let s = 0; const ink = im.ink, t = T.t;
+  for (let y = 0; y < th; y++) { const ro = (y + y0) * W + x0, to = y * tw; for (let x = 0; x < tw; x++) s += ink[ro + x] * t[to + x]; }
+  return s / (T.norm * Math.sqrt(vr));
+}
+// 粗く(2画素おき)探してから、よかった所の周りを細かく
+function amScore(im, T) {
+  let best = -1, bx = 0, by = 0;
+  for (let dy = -AM.SH; dy <= AM.SH; dy += 2) for (let dx = -AM.SH; dx <= AM.SH; dx += 2) { const v = amNccAt(im, T, dx, dy); if (v > best) { best = v; bx = dx; by = dy; } }
+  for (let dy = by - 1; dy <= by + 1; dy++) for (let dx = bx - 1; dx <= bx + 1; dx++) {
+    if ((dx === bx && dy === by) || Math.abs(dx) > AM.SH || Math.abs(dy) > AM.SH) continue;
+    const v = amNccAt(im, T, dx, dy); if (v > best) best = v;
+  }
+  return best;
+}
+// 割り当て問題(ハンガリー法)。cost は n行×m列(n≦m)、最小化。行ごとの列番号を返す
+function amHungarian(cost) {
+  const n = cost.length, m = n ? cost[0].length : 0, INF = 1e18;
+  const u = new Float64Array(n + 1), v = new Float64Array(m + 1), p = new Int32Array(m + 1), way = new Int32Array(m + 1);
+  for (let i = 1; i <= n; i++) {
+    p[0] = i; let j0 = 0;
+    const minv = new Float64Array(m + 1).fill(INF), used = new Uint8Array(m + 1);
+    do {
+      used[j0] = 1; const i0 = p[j0]; let d = INF, j1 = 0;
+      for (let j = 1; j <= m; j++) if (!used[j]) {
+        const cur = cost[i0 - 1][j - 1] - u[i0] - v[j];
+        if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
+        if (minv[j] < d) { d = minv[j]; j1 = j; }
+      }
+      for (let j = 0; j <= m; j++) { if (used[j]) { u[p[j]] += d; v[j] -= d; } else minv[j] -= d; }
+      j0 = j1;
+    } while (p[j0] !== 0);
+    do { const j1 = way[j0]; p[j0] = p[j1]; j0 = j1; } while (j0);
+  }
+  const a = new Array(n).fill(-1);
+  for (let j = 1; j <= m; j++) if (p[j]) a[p[j] - 1] = j - 1;
+  return a;
+}
+// 枠たちを札たちに割り当てたときの一致度の合計(どの札にも当たらない枠は 0.55 とみなす)
+function amAssignTotal(scoreOf, boxes, cards, dummy = 0.55) {
+  if (!boxes.length) return 0;
+  if (!cards.length) return dummy * boxes.length;
+  const M = boxes.map(b => cards.map(c => scoreOf(b, c)));
+  const cost = M.map(row => [...row.map(x => -x), ...boxes.map(() => -dummy)]);
+  const a = amHungarian(cost);
+  let s = 0; a.forEach((j, r) => { s += j >= 0 && j < cards.length ? M[r][j] : dummy; });
+  return s;
+}
+
 const atCount = (bx, geo) => { const n = bx.filter(b => b.x + b.w / 2 < geo.seamX).length; return [n, bx.length - n]; };
 // 数え違いの起こりやすさ(隠れて少なく数えるほうが多い)
 function atLogF(d) {
@@ -3873,7 +3970,7 @@ async function autoTakes(m, onProg, cancelled) {
       }
     }
   }
-  boxOf.forEach((b, c) => tmpl.set(c, visVec(visGray(visCrop(full0, { ...b, side: (b.x + b.w / 2 < seamX) ? 'N' : 'F' }, TH)))));
+  boxOf.forEach((b, c) => tmpl.set(c, amTemplate(amInk(amCrop(full0, { ...b, side: (b.x + b.w / 2 < seamX) ? 'N' : 'F' })))));
   const cnt0 = atCount(bx0, geo), lay = layN;
   // --- 2) 読みと読みの間で枚数を数える
   const hasWork = r => r.taker || (r.fault && (r.fault.N || r.fault.F));
@@ -3890,7 +3987,7 @@ async function autoTakes(m, onProg, cancelled) {
       o.push(atCount(bx, geo));
       if (j === 0) { // 次の読みの直前の盤面:札の位置と見本を覚えておく(送りの推定に使う)
         const full = atGrab(v, v.videoWidth);
-        bx.forEach(b => { b.side = b.x + b.w / 2 < seamX ? 'N' : 'F'; b.vec = visVec(visGray(visCrop(full, b, TH))); });
+        bx.forEach(b => { b.side = b.x + b.w / 2 < seamX ? 'N' : 'F'; b.crop = amCrop(full, b); });
         snaps[i] = bx;
       }
     }
@@ -3993,86 +4090,66 @@ async function autoTakes(m, onProg, cancelled) {
     if (e.taker) nTake++; if (e.fault) nFault++;
   });
   if (cancelled()) return null;
-  // --- 5) 送った札を推定する
-  // 札の位置を読みごとに追いかける。送った側では札が1枚消え、受け取った側に札が1枚現れる。
-  // 候補(送った側の札)のうち、消えた札を優先し、現れた札の画像と見本の一致度も合わせて選ぶ。
+  // --- 5) 送った札を推定する(札の見た目で照合)
+  // 「送った側の札 c が相手陣に移った」という仮説ごとに、
+  //   相手陣の枠 ↔ 相手陣の札 + c、送った側の枠 ↔ 送った側の札 − c
+  // をそれぞれ一番よく当てはめたときの一致度の合計を求め、最も合う c を選ぶ(送りの直後と次の読みの前の2場面で見る)。
+  // 位置は使わないので、置き場所を間違えた札や並べ替えた札でも見分けられる。
   onProg('送った札を調べています…', 0.86);
-  const track = new Map(); // 札番号 → { side, box }
-  boxOf.forEach((b, c) => track.set(c, { side: b.x + b.w / 2 < seamX ? 'N' : 'F', box: b }));
-  const cen = b => [b.x + b.w / 2, b.y + b.h / 2];
-  const near = (a, b) => Math.hypot(cen(a)[0] - cen(b)[0], cen(a)[1] - cen(b)[1]) / Math.max(a.w, 8);
+  const inkCache = new Map(), scCache = new Map();
+  const inkOf = b => { let v = inkCache.get(b); if (!v) { v = amInk(b.crop); inkCache.set(b, v); } return v; };
+  const scoreOf = (b, c) => {
+    const T = tmpl.get(c); if (!T || !b.crop) return 0;
+    let mm = scCache.get(b); if (!mm) { mm = new Map(); scCache.set(b, mm); }
+    let v = mm.get(c); if (v == null) { v = amScore(inkOf(b), T); mm.set(c, v); }
+    return v;
+  };
   rp = replay(m);
   for (let i = 0; i < reads.length; i++) {
+    if (cancelled()) break;
+    // 使い終わった場面の計算結果は捨てる(メモリ節約)
+    if (i >= 2 && snaps[i - 2]) snaps[i - 2].forEach(b => { inkCache.delete(b); scCache.delete(b); b.crop = null; });
     const r = reads[i], st = rp.steps.find(s => s.read === r), bx = snaps[i];
     if (!st || !bx) continue;
-    if (r.card > 0 && st.take) track.delete(r.card);
-    // 前の位置との対応(近い順に1対1)
-    const fresh = { N: [], F: [] }, lost = { N: [], F: [] };
-    for (const side of ['N', 'F']) {
-      const B = bx.filter(b => b.side === side), items = [...track].filter(([, t]) => t.side === side).map(([c]) => c);
-      const C = [];
-      B.forEach((b, bi) => items.forEach(c => { const d = near(b, track.get(c).box); if (d < 0.7) C.push([d, bi, c]); }));
-      C.sort((x, y) => x[0] - y[0]);
-      const ub = new Set(), uc = new Set();
-      for (const [, bi, c] of C) { if (ub.has(bi) || uc.has(c)) continue; ub.add(bi); uc.add(c); track.get(c).box = B[bi]; }
-      fresh[side] = B.filter((_, bi) => !ub.has(bi));
-      lost[side] = items.filter(c => !uc.has(c));
-    }
     const autoRow = r.autoTake && !(r.ops && r.ops.length) && !r.autoTake.mis;
     const needAny = st.need.N + st.need.F > 0 && !(rp.winnerAt != null && rp.winnerAt < i);
-    if (autoRow && needAny) {
-      visAssignSlots(bx, seamX, midY);
-      const board = st.boardAfterTake, pos = invertBoard(board);
-      r.ops = [];
-      let sure = true;
-      for (const from of ['N', 'F']) {
-        const to = opp(from);
-        for (let k = 0; k < (st.need[from] || 0); k++) {
-          const cands = Object.keys(pos).map(Number).filter(c => pos[c][0] === from && !r.ops.some(o => o.card === c));
-          if (!cands.length) { sure = false; continue; }
-          const score = c => {
-            let s = lost[from].includes(c) ? 0.15 : 0;
-            if (fresh[to].length && tmpl.has(c)) s += Math.max(...fresh[to].map(b => visDot(b.vec, tmpl.get(c))));
-            return s;
-          };
-          const sc = cands.map(c => [c, score(c)]).sort((x, y) => y[1] - x[1]);
-          const [card, best] = sc[0], second = sc[1] ? sc[1][1] : -1;
-          const ok = (lost[from].length === 1 && lost[from][0] === card) || (best > 0.8 && best - second > 0.06);
-          if (!ok) sure = false;
-          // 置き場所:現れた札の位置のマス。空いていなければ同じ段の近い空きマス
-          const nb = fresh[to].length ? fresh[to].reduce((x, y) => (tmpl.has(card) && visDot(y.vec, tmpl.get(card)) > visDot(x.vec, tmpl.get(card)) ? y : x)) : null;
-          const occ = new Set(Object.keys(board));
-          let slot = nb && nb.slot && nb.slot[0] === to ? nb.slot : null;
-          if (!slot || occ.has(slot)) {
-            const row = slot ? parseSlot(slot).row : 0;
-            slot = null;
-            for (const rr of [row, 0, 1, 2]) { for (let col = 0; col < 12 && !slot; col++) if (!occ.has(slotKey(to, rr, col))) slot = slotKey(to, rr, col); if (slot) break; }
-          }
-          if (!slot) { sure = false; continue; }
-          r.ops.push({ card, to: slot });
-          board[slot] = card; delete board[pos[card]]; delete pos[card];
-          nSend++;
-          const t = track.get(card) || {}; t.side = to; if (nb) { t.box = nb; fresh[to] = fresh[to].filter(b => b !== nb); } track.set(card, t);
-          lost[from] = lost[from].filter(c => c !== card);
+    if (!autoRow || !needAny) continue;
+    visAssignSlots(bx, seamX, midY);
+    const board = st.boardAfterTake, pos = invertBoard(board);
+    const scenes = [bx, snaps[i + 1]].filter(Boolean);
+    r.ops = [];
+    let sure = true;
+    for (const from of ['N', 'F']) {
+      const to = opp(from);
+      for (let k = 0; k < (st.need[from] || 0); k++) {
+        const onSide = sd => Object.keys(pos).map(Number).filter(c => pos[c][0] === sd && tmpl.has(c));
+        const Rc = onSide(to), Sc = onSide(from);
+        if (!Sc.length) { sure = false; continue; }
+        const hyp = c => scenes.reduce((sum, sc) => sum
+          + amAssignTotal(scoreOf, sc.filter(b => b.side === to), [...Rc, c])
+          + amAssignTotal(scoreOf, sc.filter(b => b.side === from), Sc.filter(x => x !== c)), 0);
+        const H = Sc.map(c => [c, hyp(c)]).sort((x, y) => y[1] - x[1]);
+        const [card] = H[0], gap = H[1] ? H[0][1] - H[1][1] : 1;
+        if (gap < 0.15) sure = false;
+        // 置き場所:相手陣でこの札に一番似ている枠のマス。空いていなければ同じ段の近い空きマス
+        const cands = bx.filter(b => b.side === to);
+        const nb = cands.length ? cands.reduce((x, y) => scoreOf(y, card) > scoreOf(x, card) ? y : x) : null;
+        const occ = new Set(Object.keys(board));
+        let slot = nb && nb.slot && nb.slot[0] === to ? nb.slot : null;
+        if (!slot || occ.has(slot)) {
+          const row = slot ? parseSlot(slot).row : 0;
+          slot = null;
+          for (const rr of [row, 0, 1, 2]) { for (let col = 0; col < 12 && !slot; col++) if (!occ.has(slotKey(to, rr, col))) slot = slotKey(to, rr, col); if (slot) break; }
         }
-      }
-      if (!sure && r.autoTake.conf === 'ok') r.autoTake.conf = 'unsure';
-      if (!sure) r.autoTake.send = 'unsure';
-      rp = replay(m);
-    } else {
-      // 記録済みの送り(手入力)に合わせて追跡も更新
-      for (const s of st.sends) { const t = track.get(s.card) || {}; t.side = s.to; const nb = fresh[s.to].shift(); if (nb) t.box = nb; track.set(s.card, t); lost[s.from] = lost[s.from].filter(c => c !== s.card); }
-    }
-    // 並べ替え:同じ側で見失った札を、新しく現れた位置へ
-    for (const side of ['N', 'F']) {
-      for (const b of fresh[side]) {
-        const um = lost[side].filter(c => track.get(c)?.side === side);
-        if (!um.length) break;
-        const c = um.reduce((x, y) => near(b, track.get(y).box) < near(b, track.get(x).box) ? y : x);
-        track.get(c).box = b; lost[side] = lost[side].filter(x => x !== c);
+        if (!slot) { sure = false; continue; }
+        r.ops.push({ card, to: slot });
+        board[slot] = card; delete board[pos[card]]; pos[card] = slot;
+        nSend++;
       }
     }
-    if (i % 5 === 0) onProg(`送った札を調べています… ${i + 1} / ${reads.length}`, 0.86 + 0.14 * (i + 1) / reads.length);
+    if (!sure) { r.autoTake.send = 'unsure'; if (r.autoTake.conf === 'ok') r.autoTake.conf = 'unsure'; }
+    rp = replay(m);
+    onProg(`送った札を調べています… ${i + 1} / ${reads.length}`, 0.86 + 0.14 * (i + 1) / reads.length);
   }
   return { nTake, nFault, nMis, nUnsure: reads.filter(r => r.autoTake && r.autoTake.conf !== 'ok').length, nSend, cnt0, lay };
 }
