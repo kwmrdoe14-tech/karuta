@@ -207,7 +207,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25i</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25j</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -2725,7 +2725,7 @@ function stopVideo() { const v = vid(); if (v) { v.pause(); lastVideoPos = v.cur
 
 function renderEdit(body) {
   const m = curMatch();
-  const needFile = !App.videoFile || (m.video && App.videoFile.name !== m.video.name);
+  const needFile = !App.videoFile;
   body.innerHTML = `
   <div class="edit-grid">
     <div class="stack">
@@ -2823,9 +2823,11 @@ function updateTimeUI() {
 ACT.openVideo = el => {
   const f = el.files[0]; if (!f) return;
   const m = curMatch();
-  if (m.video && m.video.name !== f.name && !confirm(`この試合は「${m.video.name}」で記録されています。別の動画「${f.name}」を使いますか?`)) return;
+  if (m.video && m.video.name !== f.name && !confirm(`この試合は「${m.video.name}」で記録されています。別の動画「${f.name}」を使いますか?(形式を変換した同じ試合の動画なら「OK」)`)) return;
   if (App.videoURL) URL.revokeObjectURL(App.videoURL);
   App.videoFile = f; App.videoURL = URL.createObjectURL(f);
+  // 別名の動画(形式を変換したものなど)に切り替えたときは、その名前を記録する
+  if (m.video && m.video.name !== f.name) { m.video = { ...m.video, name: f.name, size: f.size }; saveMatch(m); }
   lastVideoPos = 0;
   renderMatch();
 };
