@@ -207,7 +207,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25j</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25k</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -2774,6 +2774,7 @@ function renderEdit(body) {
       <div id="editor" class="editor"></div>
       <div>
         <div class="row" style="margin-bottom:6px"><h3 style="margin:0">読みの一覧</h3><span class="muted small" id="reads-count"></span><span class="spacer"></span>
+          <button class="small" data-act="autoTakes" title="映像で左右の札の枚数を数えて、取り・お手つき・送りを推定します">取りを自動推定</button>
           <button class="small" data-act="selLayout">初期配置</button>
           <button class="small primary" data-act="addRead">＋ 今の位置に読みを追加 (R)</button></div>
         <div class="reads" id="reads"></div>
@@ -2906,7 +2907,7 @@ function onBoardClick(e) {
     } else {
       const r = m.reads[App.sel];
       r.ops = r.ops || [];
-      r.ops.push({ card: c, to: k });
+      r.ops.push({ card: c, to: k }); delete r.autoTake;
     }
     saveMatch(m); refreshRP(); drawBoard(); drawEditor(); drawReads();
     return;
@@ -3017,9 +3018,9 @@ ACT.pickCard = () => {
   openPicker({ title: `#${App.sel + 1} で読まれた札`, used, cands: r.cand || [], allowJo: true, allowNone: true, onPick: c => { r.card = c; r.cardSrc = 'manual'; afterReadEdit(); } });
 };
 ACT.setCard = el => { const r = curRead(); r.card = +el.dataset.v; r.cardSrc = 'manual'; afterReadEdit(); };
-ACT.setTaker = el => { const r = curRead(); r.taker = el.dataset.v || null; afterReadEdit(); };
-ACT.toggleFault = el => { const r = curRead(); r.fault = r.fault || {}; r.fault[el.dataset.v] = !r.fault[el.dataset.v]; afterReadEdit(); };
-ACT.delOp = el => { curRead().ops.splice(+el.dataset.i, 1); afterReadEdit(); };
+ACT.setTaker = el => { const r = curRead(); r.taker = el.dataset.v || null; delete r.autoTake; afterReadEdit(); };
+ACT.toggleFault = el => { const r = curRead(); r.fault = r.fault || {}; r.fault[el.dataset.v] = !r.fault[el.dataset.v]; delete r.autoTake; afterReadEdit(); };
+ACT.delOp = el => { const r = curRead(); r.ops.splice(+el.dataset.i, 1); delete r.autoTake; afterReadEdit(); };
 ACT.setT = () => { const t = nowT(); if (t == null) return; const r = curRead(); r.t = t; r.tSrc = 'manual'; sortReads(); afterReadEdit(); };
 ACT.gotoT = () => seekTo(curRead().t);
 ACT.setK = () => { const t = nowT(); if (t == null) return; curRead().kimariT = t; afterReadEdit(); };
@@ -3058,14 +3059,14 @@ function drawReads() {
   $('#reads').innerHTML = `<table class="t"><tr><th>#</th><th>時刻</th><th>札</th><th>場所</th><th>取り</th><th>お手つき</th><th>送り</th><th>反応(動き出し)</th><th></th></tr>
   ${m.reads.map((r, i) => {
     const st = RP.steps[i];
-    const low = r.card == null || (r.cand && r.cand[0] && r.cand[0][1] < 0.5 && r.cand[0][0] === r.card && !r.checked);
+    const low = r.card == null || (r.cand && r.cand[0] && r.cand[0][1] < 0.5 && r.cand[0][0] === r.card && !r.checked) || (r.autoTake && r.autoTake.conf !== 'ok');
     const kt = kimariTime(r, st);
     const rx = s => (r.react?.[s]?.move != null && kt.t != null ? `<span class="dot ${s.toLowerCase()}"></span>${fmtMs(r.react[s].move - kt.t)}` : '');
     return `<tr data-i="${i}" class="${i === App.sel ? 'sel' : ''} ${low ? 'low' : ''}">
       <td class="muted">${i + 1}</td><td class="num">${fmtT(r.t)}</td>
       <td><b>${r.card === 0 ? '序歌' : r.card ? (st.kimari || STD_KIMARI[r.card]) : '未確定'}</b>${low && r.card != null ? ' <span data-tip="音声認識の確信度が低めです">?</span>' : ''}</td>
       <td class="small">${r.card > 0 ? (st.onField ? SIDE_NAME[st.fieldSide] + '陣' : (st.noLayout ? '' : '<span class="muted">空札</span>')) : ''}</td>
-      <td>${st.take ? `<span class="dot ${st.take.side.toLowerCase()}"></span>${esc(sideName(m, st.take.side))}` : ''}</td>
+      <td>${st.take ? `<span class="dot ${st.take.side.toLowerCase()}"></span>${esc(sideName(m, st.take.side))}` : ''}${r.autoTake ? ' <span class="muted small" data-tip="映像から自動で推定した結果です。直すと手入力として扱います">推定</span>' : ''}</td>
       <td>${st.faults.map(f => `<span class="dot ${f.side.toLowerCase()}"></span>`).join('')}</td>
       <td class="small">${st.sends.map(s => STD_KIMARI[s.card]).join('・')}</td>
       <td class="small">${rx('N')} ${rx('F')}</td>
@@ -3760,6 +3761,249 @@ function sendEvalHTML(m, res) {
   </table>
   <div class="muted small" style="margin-top:6px">勝率は送った側から見た値。候補の札は実際と同じ位置に置いたと仮定して比べています。判定は最善との差(2pt未満=好手、5pt未満=まずまず、10pt未満=疑問手)。簡易モデルによる参考値で、試行回数による誤差が数pt程度あります。</div>`;
 }
+
+// ===== 取り・お手つき・送りの自動推定(映像で左右の札の枚数を数える) =====
+// 取った選手は、自陣から取っても敵陣から取って1枚送っても、自分の札が必ず1枚減る。
+// 読みと読みの間の落ち着いた場面で左右の枚数を数え、全体として一番つじつまの合う取りの並びを求める(ビタビ法)。
+// 送った札は、試合前の映像から作った札の見本と見比べて推定する。
+const AT = { W: 1280 };
+function atSeek(v, t) {
+  return new Promise(res => {
+    const done = () => { v.removeEventListener('seeked', done); clearTimeout(to); res(); };
+    const to = setTimeout(done, 3000);
+    v.addEventListener('seeked', done);
+    v.currentTime = clamp(t, 0, (v.duration || 1e9) - 0.05);
+  });
+}
+function atGrab(v, w) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = Math.round(v.videoHeight * w / v.videoWidth);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  return c;
+}
+// 1コマの札の枠(元の動画の座標)
+function atBoxes(v, geo) {
+  const c = atGrab(v, AT.W), sc = v.videoWidth / AT.W;
+  const bx = visDetect(c.getContext('2d').getImageData(0, 0, c.width, c.height)).map(b => ({ x: b.x * sc, y: b.y * sc, w: b.w * sc, h: b.h * sc }));
+  return geo ? bx.filter(b => { const cx = b.x + b.w / 2, cy = b.y + b.h / 2; return cx > geo.reg[0] && cx < geo.reg[2] && cy > geo.reg[1] && cy < geo.reg[3]; }) : bx;
+}
+const atCount = (bx, geo) => { const n = bx.filter(b => b.x + b.w / 2 < geo.seamX).length; return [n, bx.length - n]; };
+// 数え違いの起こりやすさ(隠れて少なく数えるほうが多い)
+function atLogF(d) {
+  const p = d === 0 ? 0.62 : d === -1 ? 0.13 : d === 1 ? 0.08 : d === -2 ? 0.05 : d === 2 ? 0.02 : 0.01;
+  return Math.log(p);
+}
+
+async function autoTakes(m, onProg, cancelled) {
+  const v = vid();
+  if (!v || !v.videoWidth) throw new Error('映像が表示できる動画を開いてください');
+  if (!Object.keys(m.layout || {}).length) throw new Error('先に初期配置を入力してください');
+  v.pause();
+  const reads = m.reads.filter(r => r.t != null).sort((a, b) => a.t - b.t);
+  const first = reads.find(r => r.card > 0);
+  if (!first) throw new Error('札が特定された読みがありません');
+  // --- 1) 試合開始時の盤面:中央線・範囲・札の見本
+  onProg('試合開始時の盤面を調べています…', 0);
+  // 数コマ見て、初期配置の枚数と合うコマ(なければ一番多く見つかったコマ)を使う
+  const layN = countSides(m.layout);
+  let bx0 = null, full0 = null;
+  for (const d of [3, 4, 5, 6]) {
+    const t0 = Math.max(0.2, first.t - d);
+    await atSeek(v, t0);
+    const bx = atBoxes(v, null);
+    const good = bx.length === layN.N + layN.F;
+    if (!bx0 || good || (bx0.length !== layN.N + layN.F && bx.length > bx0.length)) { bx0 = bx; full0 = atGrab(v, v.videoWidth); }
+    if (good) break;
+  }
+  if (bx0.length < 10) throw new Error('試合開始時の映像で札が見つかりませんでした');
+  const seamX = visGap(bx0, 0) ?? v.videoWidth / 2, midY = visGap(bx0, 1) ?? v.videoHeight / 2;
+  const cw = bx0.map(b => b.w).sort((a, b) => a - b)[bx0.length >> 1], chh = bx0.map(b => b.h).sort((a, b) => a - b)[bx0.length >> 1];
+  const geo = { seamX, midY, reg: [Math.min(...bx0.map(b => b.x)) - cw, Math.min(...bx0.map(b => b.y)) - chh, Math.max(...bx0.map(b => b.x + b.w)) + cw, Math.max(...bx0.map(b => b.y + b.h)) + chh] };
+  visAssignSlots(bx0, seamX, midY);
+  const tmpl = new Map(); // 札番号 → 見本
+  for (const b of bx0) { const c = m.layout[b.slot]; if (c) tmpl.set(c, visVec(visGray(visCrop(full0, b, TH)))); }
+  const cnt0 = atCount(bx0, geo), lay = layN;
+  // --- 2) 読みと読みの間で枚数を数える
+  const hasWork = r => r.taker || (r.fault && (r.fault.N || r.fault.F));
+  const obs = [];
+  for (let i = 0; i < reads.length; i++) {
+    if (cancelled()) return null;
+    const ta = reads[i].t, tb = i + 1 < reads.length ? reads[i + 1].t : ta + 20;
+    const ts = [0.5, 1.5, 2.5, 3.5].map(k => tb - k).filter(t => t > ta + 2);
+    if (!ts.length) ts.push((ta + tb) / 2);
+    const o = [];
+    for (const t of ts) { await atSeek(v, t); o.push(atCount(atBoxes(v, geo), geo)); }
+    obs.push(o);
+    onProg(`札の枚数を数えています… ${i + 1} / ${reads.length}`, (i + 1) / reads.length * 0.8);
+  }
+  // --- 3) つじつまの合う取りの並び(状態=左の選手の枚数、右は合計から決まる)
+  onProg('取りの並びを求めています…', 0.82);
+  let rp = replay(m);
+  const stepOf = new Map(rp.steps.map(s => [s.read, s]));
+  // 各読みで考えられる出来事 { taker, fault, dN(左の増減), dT(合計の増減), lp(事前確率) }
+  const choices = reads.map(r => {
+    const st = stepOf.get(r);
+    const fixed = hasWork(r);
+    const ev = [];
+    const onField = st?.onField, unknown = r.card == null || st?.noLayout;
+    const add = (taker, fault, dN, dT, p) => ev.push({ taker, fault, dN, dT, lp: Math.log(p) });
+    if (r.card === 0) add(null, null, 0, 0, 1);
+    else if (onField || unknown) {
+      add('N', null, -1, -1, 0.49); add('F', null, 0, -1, 0.49);
+      // 取り+相手のお手つき(まれ)
+      add('N', 'F', -2, -1, 0.005); add('F', 'N', 1, -1, 0.005);
+      if (unknown) { add(null, null, 0, 0, 0.5); add(null, 'N', 1, 0, 0.02); add(null, 'F', -1, 0, 0.02); }
+    } else { add(null, null, 0, 0, 0.94); add(null, 'N', 1, 0, 0.03); add(null, 'F', -1, 0, 0.03); }
+    if (fixed) {
+      const fN = !!r.fault?.N, fF = !!r.fault?.F;
+      const keep = ev.filter(e => e.taker === (r.taker || null) && (e.fault === 'N') === fN && (e.fault === 'F') === fF);
+      return keep.length ? keep : ev;
+    }
+    return ev;
+  });
+  const S = 51, NEG = -1e18;
+  const emis = (i, nN, T) => {
+    const nF = T - nN;
+    if (nN < 0 || nF < 0) return NEG;
+    let s = 0;
+    for (const [oN, oF] of obs[i]) s += Math.max(atLogF(oN - nN) + atLogF(oF - nF), Math.log(0.002));
+    return s;
+  };
+  // 前の区間との枚数の差(手や体で長く隠れている札があっても、差には出にくい)
+  const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  const medO = obs.map(o => [med(o.map(x => x[0])), med(o.map(x => x[1]))]);
+  const dlt = (i, e) => {
+    const p = i ? medO[i - 1] : cnt0, c = medO[i];
+    return atLogF(c[0] - p[0] - e.dN) + atLogF(c[1] - p[1] - (e.dT - e.dN));
+  };
+  // 合計は分岐ごとに違う可能性がある(札未確定の行)ので、状態は(左の枚数, 合計)
+  const key = (n, T) => n * 64 + T;
+  let cur = new Map([[key(lay.N, lay.N + lay.F), { lp: 0, back: [] }]]);
+  const hist = [];
+  for (let i = 0; i < reads.length; i++) {
+    const nxt = new Map();
+    for (const [k, s] of cur) {
+      const n = Math.floor(k / 64), T = k % 64;
+      if (n === 0 || T - n === 0) { // 決着後は変化なし
+        const kk = k, lp = s.lp;
+        if (!nxt.has(kk) || nxt.get(kk).lp < lp) nxt.set(kk, { lp, from: k, e: null });
+        continue;
+      }
+      for (const e of choices[i]) {
+        const n2 = n + e.dN, T2 = T + e.dT;
+        const em = emis(i, n2, T2);
+        if (em <= NEG / 2) continue;
+        const kk = key(n2, T2), lp = s.lp + e.lp + 0.5 * em + dlt(i, e);
+        if (!nxt.has(kk) || nxt.get(kk).lp < lp) nxt.set(kk, { lp, from: k, e });
+      }
+    }
+    hist.push(nxt);
+    cur = new Map([...nxt].map(([k, s]) => [k, { lp: s.lp }]));
+  }
+  // 逆にたどる
+  let bestK = null, bestLp = NEG;
+  for (const [k, s] of cur) if (s.lp > bestLp) { bestLp = s.lp; bestK = k; }
+  const path = new Array(reads.length);
+  for (let i = reads.length - 1; i >= 0; i--) { const s = hist[i].get(bestK); path[i] = s.e; bestK = s.from; }
+  window.__atDebug = { lay, obs, cnt0, path: path.map(e => e && { taker: e.taker, fault: e.fault }), geo };
+  // 確からしさ:その行だけ別の出来事にしたときにどれだけ合わなくなるか(前後の枚数で簡易に判定)
+  const conf = reads.map((r, i) => {
+    const o = obs[i], prevO = i ? obs[i - 1] : [cnt0];
+    const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+    const dN = med(o.map(x => x[0])) - med(prevO.map(x => x[0])), dF = med(o.map(x => x[1])) - med(prevO.map(x => x[1]));
+    const e = path[i];
+    if (!e) return 'ok';
+    const expF = e.dT - e.dN;
+    return dN === e.dN && dF === expF ? 'ok' : 'unsure';
+  });
+  // --- 4) 結果を書き込む(手で記録した行は変えない)
+  let nTake = 0, nFault = 0, nUnsure = 0, nSend = 0;
+  reads.forEach((r, i) => {
+    const e = path[i];
+    if (!e || hasWork(r) || r.card === 0) return;
+    r.taker = e.taker; r.fault = e.fault ? { [e.fault]: true } : {};
+    r.autoTake = { conf: conf[i] };
+    if (e.taker) nTake++; if (e.fault) nFault++; if (conf[i] !== 'ok') nUnsure++;
+  });
+  if (cancelled()) return null;
+  // --- 5) 送った札を推定する
+  rp = replay(m);
+  for (let i = 0; i < reads.length; i++) {
+    if (cancelled()) break;
+    const r = reads[i];
+    if (!r.autoTake || (r.ops && r.ops.length)) continue;
+    const st = rp.steps.find(s => s.read === r);
+    if (!st) continue;
+    for (const from of ['N', 'F']) {
+      const need = st.need[from] || 0;
+      if (!need) continue;
+      const to = opp(from);
+      // 送った後の落ち着いた場面(次の読みの直前)
+      const tb = i + 1 < reads.length ? reads[i + 1].t : r.t + 20;
+      await atSeek(v, tb - 0.8);
+      const bx = atBoxes(v, geo);
+      visAssignSlots(bx, seamX, midY);
+      const full = atGrab(v, v.videoWidth);
+      const board = st.boardAfterTake, pos = invertBoard(board);
+      const fromCards = Object.keys(pos).map(Number).filter(c => pos[c][0] === from && tmpl.has(c));
+      const cand = [];
+      for (const b of bx.filter(b => b.side === to)) {
+        const vec = visVec(visGray(visCrop(full, b, TH)));
+        const sc = fromCards.map(c => [c, visDot(vec, tmpl.get(c))]).sort((a, c2) => c2[1] - a[1]);
+        // 受け取った側に元からある札の見本との一致より、送り側の札との一致がはっきり高いもの
+        const toBest = Object.keys(pos).map(Number).filter(c => pos[c][0] === to && tmpl.has(c)).reduce((mx, c) => Math.max(mx, visDot(vec, tmpl.get(c))), 0);
+        if (sc[0] && sc[0][1] > 0.55 && sc[0][1] - toBest > 0.08 && sc[0][1] - (sc[1]?.[1] ?? 0) > 0.05) cand.push({ card: sc[0][0], s: sc[0][1], b });
+      }
+      cand.sort((a, c2) => c2.s - a.s);
+      const used = new Set();
+      r.ops = r.ops || [];
+      for (const c of cand) {
+        if (used.size >= need || used.has(c.card)) continue;
+        // 置き場所:見えた位置のマス。空いていなければ同じ段の近い空きマス
+        const occ = new Set(Object.keys(board));
+        let slot = c.b.slot;
+        if (!slot || occ.has(slot)) {
+          const { row } = c.b.slot ? parseSlot(c.b.slot) : { row: 0 };
+          for (let col = 0; col < 12 && (!slot || occ.has(slot)); col++) slot = slotKey(to, row, col);
+        }
+        r.ops.push({ card: c.card, to: slot });
+        board[slot] = c.card; delete board[pos[c.card]];
+        used.add(c.card); nSend++;
+      }
+      if (used.size < need) r.autoTake.conf = 'unsure';
+    }
+    rp = replay(m);
+    onProg(`送った札を調べています… ${i + 1} / ${reads.length}`, 0.85 + 0.15 * (i + 1) / reads.length);
+  }
+  return { nTake, nFault, nUnsure: reads.filter(r => r.autoTake && r.autoTake.conf !== 'ok').length, nSend, cnt0, lay };
+}
+
+ACT.autoTakes = async el => {
+  const m = curMatch();
+  const already = m.reads.some(r => r.taker || (r.fault && (r.fault.N || r.fault.F)));
+  if (!confirm(`映像から取り・お手つき・送りを推定します(数分かかります)。${already ? '\n手で記録済みの行はそのまま残します。' : ''}\n始めますか?`)) return;
+  // 以前の自動推定の結果は消してからやり直す
+  m.reads.forEach(r => { if (r.autoTake) { r.taker = null; r.fault = {}; r.ops = []; delete r.autoTake; } });
+  let cancel = false;
+  el.disabled = true;
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal" style="width:min(520px,94vw)"><div class="mh"><b>取りの自動推定</b><span class="spacer"></span><button data-v="cancel">中止</button></div>
+    <div class="mb"><div class="small at-msg">準備しています…</div><div class="vis-bar" style="width:100%;margin-top:8px"><i class="at-bar" style="width:0%"></i></div></div></div>`;
+  document.body.appendChild(bg);
+  bg.querySelector('[data-v=cancel]').onclick = () => { cancel = true; };
+  const prog = (t, p) => { bg.querySelector('.at-msg').textContent = t; if (p != null) bg.querySelector('.at-bar').style.width = Math.round(p * 100) + '%'; };
+  try {
+    const res = await autoTakes(m, prog, () => cancel);
+    bg.remove();
+    saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawBoard();
+    if (!res) { toast('中止しました'); return; }
+    const warn = Math.abs(res.cnt0[0] - res.lay.N) > 1 || Math.abs(res.cnt0[1] - res.lay.F) > 1 ? `\n※試合開始時の映像で数えた枚数(左${res.cnt0[0]}・右${res.cnt0[1]})が初期配置(左${res.lay.N}・右${res.lay.F})と違いました。` : '';
+    alert(`推定しました:取り ${res.nTake}件・お手つき ${res.nFault}件・送り ${res.nSend}件。\n黄色の行(${res.nUnsure}件)は映像で確認してください。${warn}`);
+  } catch (e) {
+    console.error(e); bg.remove(); alert('推定できませんでした:' + e.message);
+  } finally { el.disabled = false; }
+};
 
 
 // ===== 起動 =====
