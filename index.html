@@ -207,7 +207,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25o</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25q</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -2792,8 +2792,15 @@ function renderEdit(body) {
   const v = vid();
   if (v) {
     v.addEventListener('loadedmetadata', () => {
-      m.video = { ...(m.video || {}), name: App.videoFile.name, size: App.videoFile.size, duration: v.duration };
-      saveMatch(m);
+      // 長さが記録と違う動画(カット動画など)では、読みの時刻と映像がずれる
+      const was = m.video?.duration, lastT = Math.max(0, ...m.reads.map(r => r.t ?? 0));
+      const mm = s => `${Math.floor(s / 60)}分${String(Math.round(s % 60)).padStart(2, '0')}秒`;
+      if ((was && Math.abs(was - v.duration) > 3) || lastT > v.duration + 1) {
+        alert(`この動画の長さ(${mm(v.duration)})が、この試合を記録した動画の長さ(${mm(was || lastT)})と違います。\nカット動画など別の動画を開いていると、読みの時刻と映像がずれます(一覧の時刻を押すと別の場面に飛びます)。\n記録に使った元の動画(形式を変換したものも可)を開き直してください。`);
+      } else {
+        m.video = { ...(m.video || {}), name: App.videoFile.name, size: App.videoFile.size, duration: v.duration };
+        saveMatch(m);
+      }
       if (lastVideoPos) v.currentTime = lastVideoPos;
       drawTimelines();
     });
@@ -2831,11 +2838,11 @@ function updateTimeUI() {
 ACT.openVideo = el => {
   const f = el.files[0]; if (!f) return;
   const m = curMatch();
-  if (m.video && m.video.name !== f.name && !confirm(`この試合は「${m.video.name}」で記録されています。別の動画「${f.name}」を使いますか?(形式を変換した同じ試合の動画なら「OK」)`)) return;
+  if (m.video && m.video.name !== f.name && !confirm(`この試合は「${m.video.name}」で記録されています。別の動画「${f.name}」を使いますか?\n形式を変換した同じ試合の動画なら「OK」。カット動画は時刻がずれるので使えません。`)) return;
   if (App.videoURL) URL.revokeObjectURL(App.videoURL);
   App.videoFile = f; App.videoURL = URL.createObjectURL(f);
   // 別名の動画(形式を変換したものなど)に切り替えたときは、その名前を記録する
-  if (m.video && m.video.name !== f.name) { m.video = { ...m.video, name: f.name, size: f.size }; saveMatch(m); }
+  
   lastVideoPos = 0;
   renderMatch();
 };
@@ -3994,6 +4001,53 @@ async function autoTakes(m, onProg, cancelled) {
     obs.push(o);
     onProg(`札の枚数を数えています… ${i + 1} / ${reads.length}`, (i + 1) / reads.length * 0.8);
   }
+  // --- 2b) 札の見た目で、各場面の枠がどの札かを決める(位置は使わない)
+  // 場面ごとに、場にあるはずの全札と全枠を一致度で割り当て、札ごとに「左右どちらの陣にあるか」の並びを得る。
+  // 見間違いを均すため、札ごとに左右の並びをなめらかにし(ビタビ法)、陣が変わった所を「送り」とみなす。
+  onProg('札の見た目を照合しています…', 0.8);
+  const fieldCards = new Set(Object.values(m.layout));
+  const readIdx = new Map(); reads.forEach((r, i) => { if (fieldCards.has(r.card) && !readIdx.has(r.card)) readIdx.set(r.card, i); });
+  const seen = new Map(); // 札 → [場面ごとの {side, s, mg, box}]
+  for (let i = 0; i < reads.length; i++) {
+    if (cancelled()) return null;
+    const bx = snaps[i]; if (!bx) continue;
+    const onBoard = [...tmpl.keys()].filter(c => !(readIdx.has(c) && readIdx.get(c) <= i));
+    if (!onBoard.length) continue;
+    const M = bx.map(b => { const ink = amInk(b.crop); return onBoard.map(c => amScore(ink, tmpl.get(c))); });
+    const cost = M.map(row => [...row.map(x => -x), ...bx.map(() => -0.5)]);
+    const a = amHungarian(cost);
+    a.forEach((j, bi) => {
+      if (j < 0 || j >= onBoard.length) return;
+      const row = M[bi], sc = row[j]; let sec = 0; row.forEach((x, q) => { if (q !== j && x > sec) sec = x; });
+      const c = onBoard[j]; if (!seen.has(c)) seen.set(c, []);
+      seen.get(c)[i] = { side: bx[bi].side, s: sc, mg: sc - sec, box: bx[bi] };
+    });
+    if (i % 4 === 0) onProg(`札の見た目を照合しています… ${i + 1} / ${reads.length}`, 0.8 + 0.06 * (i + 1) / reads.length);
+  }
+  const ownSide = {}; Object.entries(m.layout).forEach(([k, c]) => { ownSide[c] = k[0]; });
+  const sidePath = new Map(), flips = reads.map(() => []);
+  for (const c of tmpl.keys()) {
+    const end = readIdx.has(c) ? readIdx.get(c) : reads.length, ob = seen.get(c) || [];
+    let lp = { N: ownSide[c] === 'N' ? 0 : -20, F: ownSide[c] === 'F' ? 0 : -20 };
+    const back = [];
+    for (let i = 0; i < end; i++) {
+      const o = ob[i], nl = {}, bk = {};
+      for (const sd of ['N', 'F']) {
+        const stay = lp[sd] + Math.log(0.98), sw = lp[opp(sd)] + Math.log(0.02);
+        bk[sd] = stay >= sw ? sd : opp(sd);
+        let e = 0;
+        if (o) { const conf = o.s > 0.6 && o.mg > 0.08; e = Math.log(conf ? (o.side === sd ? 0.95 : 0.05) : (o.side === sd ? 0.7 : 0.3)); }
+        nl[sd] = Math.max(stay, sw) + e;
+      }
+      lp = nl; back.push(bk);
+    }
+    const path = new Array(end); let sd = lp.N >= lp.F ? 'N' : 'F';
+    for (let i = end - 1; i >= 0; i--) { path[i] = sd; sd = back[i][sd]; }
+    sidePath.set(c, path);
+    let prev = ownSide[c];
+    path.forEach((x, i) => { if (x !== prev) flips[i].push({ card: c, from: prev, to: x }); prev = x; });
+  }
+  const sideAt = (c, i) => { const p = sidePath.get(c); return p && i >= 0 && i < p.length ? p[i] : (i < 0 ? ownSide[c] : null); };
   // --- 3) つじつまの合う取りの並び(状態=左の選手の枚数、右は合計から決まる)
   onProg('取りの並びを求めています…', 0.82);
   let rp = replay(m);
@@ -4023,6 +4077,16 @@ async function autoTakes(m, onProg, cancelled) {
     }
     return ev;
   });
+  // 見た目で見えた送り(陣が変わった札)の数と、その出来事で必要な送りの数が合うか
+  const flipTerm = (i, e) => {
+    if (e.end) return 0;
+    const r = reads[i], need = { N: 0, F: 0 };
+    const fs = fieldCards.has(r.card) ? (sideAt(r.card, i - 1) || stepOf.get(r)?.fieldSide) : null;
+    if (e.taker && fs && e.taker !== fs) need[e.taker]++;
+    if (e.fault) need[opp(e.fault)]++;
+    const got = { N: 0, F: 0 }; flips[i].forEach(f => got[f.from]++);
+    return -0.9 * (Math.abs(need.N - got.N) + Math.abs(need.F - got.F));
+  };
   const S = 51, NEG = -1e18;
   const emis = (i, nN, T) => {
     const nF = T - nN;
@@ -4052,7 +4116,7 @@ async function autoTakes(m, onProg, cancelled) {
         const n2 = n + e.dN, T2 = T + e.dT;
         const em = emis(i, n2, T2);
         if (em <= NEG / 2) continue;
-        const kk = key(n2, T2), lp = s.lp + e.lp + 0.5 * em + dlt(i, e);
+        const kk = key(n2, T2), lp = s.lp + e.lp + 0.5 * em + dlt(i, e) + flipTerm(i, e);
         if (!nxt.has(kk) || nxt.get(kk).lp < lp) nxt.set(kk, { lp, from: k, e });
       }
     }
@@ -4076,7 +4140,7 @@ async function autoTakes(m, onProg, cancelled) {
     return dN === e.dN && dF === expF ? 'ok' : 'unsure';
   });
   // --- 4) 結果を書き込む(手で記録した行は変えない)
-  let nTake = 0, nFault = 0, nSend = 0, nMis = 0;
+  let nTake = 0, nFault = 0, nSend = 0, nMis = 0, nMove = 0;
   reads.forEach((r, i) => {
     const e = path[i];
     if (hasWork(r) || r.card === 0) return;
@@ -4105,6 +4169,7 @@ async function autoTakes(m, onProg, cancelled) {
     return v;
   };
   rp = replay(m);
+  const usedFlip = new Set();
   for (let i = 0; i < reads.length; i++) {
     if (cancelled()) break;
     // 使い終わった場面の計算結果は捨てる(メモリ節約)
@@ -4113,27 +4178,36 @@ async function autoTakes(m, onProg, cancelled) {
     if (!st || !bx) continue;
     const autoRow = r.autoTake && !(r.ops && r.ops.length) && !r.autoTake.mis;
     const needAny = st.need.N + st.need.F > 0 && !(rp.winnerAt != null && rp.winnerAt < i);
-    if (!autoRow || !needAny) continue;
+    if (!autoRow) continue;
     visAssignSlots(bx, seamX, midY);
     const board = st.boardAfterTake, pos = invertBoard(board);
     const scenes = [bx, snaps[i + 1]].filter(Boolean);
     r.ops = [];
     let sure = true;
-    for (const from of ['N', 'F']) {
+    for (const from of needAny ? ['N', 'F'] : []) {
       const to = opp(from);
       for (let k = 0; k < (st.need[from] || 0); k++) {
         const onSide = sd => Object.keys(pos).map(Number).filter(c => pos[c][0] === sd && tmpl.has(c));
         const Rc = onSide(to), Sc = onSide(from);
         if (!Sc.length) { sure = false; continue; }
-        const hyp = c => scenes.reduce((sum, sc) => sum
-          + amAssignTotal(scoreOf, sc.filter(b => b.side === to), [...Rc, c])
-          + amAssignTotal(scoreOf, sc.filter(b => b.side === from), Sc.filter(x => x !== c)), 0);
-        const H = Sc.map(c => [c, hyp(c)]).sort((x, y) => y[1] - x[1]);
-        const [card] = H[0], gap = H[1] ? H[0][1] - H[1][1] : 1;
-        if (gap < 0.15) sure = false;
+        // まず、見た目の追跡でこの前後に相手陣へ移った札を使う
+        let card = null;
+        for (const d of [0, 1, -1, 2]) {
+          const f = (flips[i + d] || []).find(f => f.from === from && f.to === to && Sc.includes(f.card) && !usedFlip.has(f));
+          if (f) { card = f.card; usedFlip.add(f); if (d !== 0) sure = false; break; }
+        }
+        if (card == null) {
+          // 見つからなければ、仮説ごとの当てはまりで選ぶ
+          const hyp = c => scenes.reduce((sum, sc) => sum
+            + amAssignTotal(scoreOf, sc.filter(b => b.side === to), [...Rc, c])
+            + amAssignTotal(scoreOf, sc.filter(b => b.side === from), Sc.filter(x => x !== c)), 0);
+          const H = Sc.map(c => [c, hyp(c)]).sort((x, y) => y[1] - x[1]);
+          card = H[0][0]; sure = false;
+        }
         // 置き場所:相手陣でこの札に一番似ている枠のマス。空いていなければ同じ段の近い空きマス
         const cands = bx.filter(b => b.side === to);
-        const nb = cands.length ? cands.reduce((x, y) => scoreOf(y, card) > scoreOf(x, card) ? y : x) : null;
+        const sn = seen.get(card)?.[i];
+        const nb = sn && sn.side === to ? sn.box : cands.length ? cands.reduce((x, y) => scoreOf(y, card) > scoreOf(x, card) ? y : x) : null;
         const occ = new Set(Object.keys(board));
         let slot = nb && nb.slot && nb.slot[0] === to ? nb.slot : null;
         if (!slot || occ.has(slot)) {
@@ -4148,10 +4222,25 @@ async function autoTakes(m, onProg, cancelled) {
       }
     }
     if (!sure) { r.autoTake.send = 'unsure'; if (r.autoTake.conf === 'ok') r.autoTake.conf = 'unsure'; }
+    // 並べ替え:見た目ではっきり見分けられた札を、映像で見えたマスへ動かす(空いているマスだけ。入れ替えはしない)
+    for (let pass = 0; pass < 3; pass++) {
+      let movedAny = false;
+      for (const c of Object.keys(pos).map(Number)) {
+        const sn = seen.get(c)?.[i];
+        if (!sn || sn.s < 0.6 || sn.mg < 0.08 || !sn.box.slot) continue;
+        const cur = pos[c], want = sn.box.slot;
+        if (!cur || cur === want || want[0] !== cur[0] || board[want] != null) continue;
+        if (r.ops.some(o => o.card === c && o.to[0] !== cur[0])) continue;
+        r.ops.push({ card: c, to: want });
+        board[want] = c; delete board[cur]; pos[c] = want; movedAny = true; nMove++;
+      }
+      if (!movedAny) break;
+    }
+    if (!r.ops.length && !needAny) continue;
     rp = replay(m);
     onProg(`送った札を調べています… ${i + 1} / ${reads.length}`, 0.86 + 0.14 * (i + 1) / reads.length);
   }
-  return { nTake, nFault, nMis, nUnsure: reads.filter(r => r.autoTake && r.autoTake.conf !== 'ok').length, nSend, cnt0, lay };
+  return { nTake, nFault, nMis, nMove, nUnsure: reads.filter(r => r.autoTake && r.autoTake.conf !== 'ok').length, nSend, cnt0, lay };
 }
 
 ACT.autoTakes = async el => {
@@ -4175,7 +4264,7 @@ ACT.autoTakes = async el => {
     saveMatch(m, true); refreshRP(); drawReads(); drawEditor(); drawBoard();
     if (!res) { toast('中止しました'); return; }
     const warn = Math.abs(res.cnt0[0] - res.lay.N) > 1 || Math.abs(res.cnt0[1] - res.lay.F) > 1 ? `\n※試合開始時の映像で数えた枚数(左${res.cnt0[0]}・右${res.cnt0[1]})が初期配置(左${res.lay.N}・右${res.lay.F})と違いました。` : '';
-    alert(`推定しました:取り ${res.nTake}件・お手つき ${res.nFault}件・送り ${res.nSend}件。\n黄色の行(${res.nUnsure}件)は映像で確認してください。${res.nMis ? `\nうち${res.nMis}件は、空札として特定されているのに映像では札が減っていました(札の特定違いかもしれません。取りの欄に「札?」と出ます)。` : ''}${warn}`);
+    alert(`推定しました:取り ${res.nTake}件・お手つき ${res.nFault}件・送り ${res.nSend}件・並べ替え ${res.nMove}件。\n黄色の行(${res.nUnsure}件)は映像で確認してください。${res.nMis ? `\nうち${res.nMis}件は、空札として特定されているのに映像では札が減っていました(札の特定違いかもしれません。取りの欄に「札?」と出ます)。` : ''}${warn}`);
   } catch (e) {
     console.error(e); bg.remove(); alert('推定できませんでした:' + e.message);
   } finally { el.disabled = false; }
