@@ -207,7 +207,7 @@ svg.chart .axis { stroke: var(--line-2); }
 </head>
 <body>
 <header class="app">
-  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25g</span>
+  <div class="logo">かるた<span>分析</span>ノート</div><span class="muted small" title="アプリのバージョン">版 2026.09.25i</span>
   <nav><button data-go="home">試合一覧</button><button data-go="players">選手</button></nav>
   <span class="spacer"></span>
   <button class="small" id="btn-export" title="全データをファイルに保存(バックアップ・別のパソコンへの移動用)">データを書き出す</button>
@@ -2137,7 +2137,10 @@ async function openVision(mode) {
   let src = document.createElement('canvas');
   if (mode === 'video') {
     const v = vid();
-    if (!v || !v.videoWidth) { alert('動画が読み込まれていません。'); return; }
+    if (!v || !v.currentSrc) { alert('このページでは、まだ動画ファイルが選ばれていません。\n(ページを開き直すたびに、動画の上の「動画を選ぶ」で同じ動画を選び直す必要があります。音声の解析結果や読みの一覧は保存されています)'); return; }
+    // 映像の1コマが準備できるまで少し待つ
+    if (v.readyState < 2) await new Promise(res => { const t = setTimeout(res, 4000); v.addEventListener('loadeddata', () => { clearTimeout(t); res(); }, { once: true }); });
+    if (!v.videoWidth) { alert('動画ファイルは開けていますが、このブラウザでは映像を表示できないようです(音声だけ再生されている状態)。\nChromeで開くか、「写真から読み取る」で盤面の写真やスクリーンショットを使ってください。'); return; }
     v.pause();
     src.width = v.videoWidth; src.height = v.videoHeight;
     src.getContext('2d').drawImage(v, 0, 0);
@@ -3377,16 +3380,24 @@ function applyASRUnit(m, u, text, chunks) {
 }
 
 // ===== カット編集 =====
+const cutDefaults = m => ({ pre: 1, post: 2.5, gap: 3, jo: true, keep: 6, mode: m.reads.some(r => r.card != null) ? 'reads' : 'voice' });
 function cutPanelHTML(m) {
-  const c = { pre: 1, post: 2.5, gap: 3, jo: true, ...(m.cut || {}) };
+  const c = { ...cutDefaults(m), ...(m.cut || {}) };
   m.cut = c;
   const cuts = computeCuts(m);
   const total = cuts.reduce((a, x) => a + x[1] - x[0], 0);
   return `<details class="panel"><summary>カット編集(送り・並べ替えの時間を省く)</summary><div class="body stack">
-    <div class="small">読み上げの声が入っている場面はすべて残し、声のない時間(送り・並べ替え・暗記時間など)を省きます。${m.audio?.segs ? '' : '<b>先に「音声解析」の①を実行してください。</b>'}省いた場面の記録(何を送ったか等)は残ります。</div>
     <div class="row small">
-      <label>声の何秒前から <input type="number" step="0.5" min="0" value="${c.pre}" data-act="cutSet" data-k="pre"></label>
-      <label>声の後に残す秒数 <input type="number" step="0.5" min="0" value="${c.post}" data-act="cutSet" data-k="post"></label>
+      <label><input type="radio" name="cutmode" value="reads" data-act="cutSet" data-k="mode" ${c.mode === 'reads' ? 'checked' : ''}> <b>読みの一覧から(短い)</b>:各札の上の句の読み始めから数秒だけ残す</label>
+      <label><input type="radio" name="cutmode" value="voice" data-act="cutSet" data-k="mode" ${c.mode === 'voice' ? 'checked' : ''}> 声のある場面をすべて(長い)</label>
+    </div>
+    <div class="small">${c.mode === 'reads'
+      ? '読みの一覧の各行(上の句の読み始め)の前後だけを残します。下の句・送り・並べ替え・会話などは省きます。取りや反応の記録がある場面は、その時刻まで残します。'
+      : '読み上げの声が入っている場面はすべて残し、声のない時間(送り・並べ替え・暗記時間など)を省きます。' + (m.audio?.segs ? '' : '<b>先に「音声解析」の①を実行してください。</b>')}省いた場面の記録(何を送ったか等)は残ります。</div>
+    <div class="row small">
+      <label>${c.mode === 'reads' ? '読み始めの何秒前から' : '声の何秒前から'} <input type="number" step="0.5" min="0" value="${c.pre}" data-act="cutSet" data-k="pre"></label>
+      ${c.mode === 'reads' ? `<label>読み始めから残す秒数 <input type="number" step="0.5" min="2" value="${c.keep}" data-act="cutSet" data-k="keep"></label>` : ''}
+      <label>${c.mode === 'reads' ? 'さらに後に残す秒数' : '声の後に残す秒数'} <input type="number" step="0.5" min="0" value="${c.post}" data-act="cutSet" data-k="post"></label>
       <label>この秒数より短い無音は省かない <input type="number" step="0.5" min="0" value="${c.gap}" data-act="cutSet" data-k="gap"></label>
       <label><input type="checkbox" data-act="cutSet" data-k="jo" ${c.jo ? 'checked' : ''}> 序歌を含める</label>
     </div>
@@ -3401,21 +3412,23 @@ function cutPanelHTML(m) {
 }
 ACT.cutSet = el => {
   const m = curMatch();
-  m.cut[el.dataset.k] = el.type === 'checkbox' ? el.checked : Math.max(0, +el.value || 0);
+  const k = el.dataset.k;
+  m.cut[k] = el.type === 'checkbox' ? el.checked : el.type === 'radio' ? el.value : Math.max(0, +el.value || 0);
   saveMatch(m); drawTimelines();
+  if (k === 'mode') { const d = el.closest('details'); if (d) { d.outerHTML = cutPanelHTML(m); const nd = $$('details.panel').find(x => x.querySelector('[data-k=mode]')); if (nd) { nd.open = true; bindCommon(nd); } } return; }
   const cuts = computeCuts(m), total = cuts.reduce((a, x) => a + x[1] - x[0], 0), info = $('#cut-info');
   if (info) info.innerHTML = `元の動画 ${fmtT(vid()?.duration || m.video?.duration)} → カット後 <b>${fmtT(total)}</b>(${cuts.length}区間)`;
 };
 function computeCuts(m) {
-  const c = { pre: 1, post: 2.5, gap: 3, jo: true, ...(m.cut || {}) };
+  const c = { ...cutDefaults(m), ...(m.cut || {}) };
   const rp = RP || replay(m);
   const segs = [];
-  // 1) 読み上げの声が入っている区間はすべて残す(札の特定に失敗しても読みの場面が抜けない)
-  for (const s of m.audio?.segs || []) if (s[1] - s[0] >= 0.4) segs.push([s[0] - c.pre, s[1] + c.post]);
-  // 2) 手動で追加した読みや、反応の記録がある場面も残す
+  // 1) 「声のある場面すべて」のときは、読み上げの声が入っている区間を残す(札の特定に失敗しても読みの場面が抜けない)
+  if (c.mode !== 'reads') for (const s of m.audio?.segs || []) if (s[1] - s[0] >= 0.4) segs.push([s[0] - c.pre, s[1] + c.post]);
+  // 2) 読みの一覧の各行(上の句の読み始め)と、反応の記録がある場面を残す
   m.reads.forEach((r, i) => {
     if (r.t == null) return;
-    let e = r.t + 4;
+    let e = r.t + (c.mode === 'reads' ? c.keep : 4);
     const kt = kimariTime(r, rp.steps[i]).t;
     if (kt != null) e = Math.max(e, kt + 1.5);
     for (const p of ['N', 'F']) { const rc = r.react?.[p]; if (rc?.touch != null) e = Math.max(e, rc.touch); if (rc?.move != null) e = Math.max(e, rc.move + 0.8); }
